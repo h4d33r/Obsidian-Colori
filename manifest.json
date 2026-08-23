@@ -1,9 +1,9 @@
 {
-  "id": "obsidian-colori",
-  "name": "Obsidian Colori",
+  "id": "colori",
+  "name": "Colori",
   "version": "1.1.0",
-  "minAppVersion": "1.0.0",
-  "description": "Customize Obsidian folder, note, active note, inline title, and heading colors, font sizes, and icons with global settings and per-item overrides.",
+  "minAppVersion": "1.13.7",
+  "description": "Customize folder, note, title, and heading colors, font sizes, and icons with global settings and per-item overrides.",
   "author": "H4d33r",
   "isDesktopOnly": false
 }
