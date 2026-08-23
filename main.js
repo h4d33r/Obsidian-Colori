@@ -8,21 +8,17 @@ const {
   TFolder
 } = require("obsidian");
 
-const DEFAULT_SETTINGS = {
+const DEFAULT_SETTINGS = Object.freeze({
   folderColor: "#f0a45d",
   folderSize: 14,
   folderIcon: "",
-
   noteColor: "#83c5ff",
   noteSize: 14,
   noteIcon: "",
-
   activeNoteColor: "#ff7aa2",
   activeNoteSize: 14,
-
   inlineTitleColor: "#b392f0",
   inlineTitleSize: 28,
-
   h1Color: "#ff6b6b",
   h1Size: 28,
   h2Color: "#f2b84b",
@@ -35,11 +31,10 @@ const DEFAULT_SETTINGS = {
   h5Size: 17,
   h6Color: "#ef8fde",
   h6Size: 16,
-
   overrides: []
-};
+});
 
-const CSS_VARIABLES = {
+const CSS_VARIABLES = Object.freeze({
   folderColor: "--ct-folder-color",
   folderSize: "--ct-folder-size",
   noteColor: "--ct-note-color",
@@ -60,31 +55,130 @@ const CSS_VARIABLES = {
   h5Size: "--ct-h5-size",
   h6Color: "--ct-h6-color",
   h6Size: "--ct-h6-size"
-};
+});
 
-function escapeCssAttribute(value) {
-  return String(value)
-    .replace(/\\/g, "\\\\")
-    .replace(/"/g, '\\"');
+const SIZE_LIMITS = Object.freeze({
+  folderSize: [10, 30],
+  noteSize: [10, 30],
+  activeNoteSize: [10, 30],
+  inlineTitleSize: [12, 60],
+  h1Size: [10, 60],
+  h2Size: [10, 60],
+  h3Size: [10, 60],
+  h4Size: [10, 60],
+  h5Size: [10, 60],
+  h6Size: [10, 60]
+});
+
+const HEX_COLOR_RE = /^#[0-9a-fA-F]{6}$/;
+const MAX_ICON_CODE_POINTS = 12;
+const MAX_PATH_LENGTH = 4096;
+
+function sanitizeColor(value, fallback) {
+  return typeof value === "string" && HEX_COLOR_RE.test(value)
+    ? value.toLowerCase()
+    : fallback;
 }
 
-function escapeCssContent(value) {
+function sanitizeSize(value, min, max, fallback) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return fallback;
+  return Math.round(Math.min(max, Math.max(min, number)));
+}
+
+function sanitizeIcon(value) {
+  if (typeof value !== "string") return "";
+  const withoutControls = value.replace(/[\u0000-\u001f\u007f]/g, "");
+  return Array.from(withoutControls).slice(0, MAX_ICON_CODE_POINTS).join("");
+}
+
+function sanitizePath(value) {
+  if (typeof value !== "string") return null;
+  const cleaned = value
+    .replace(/\u0000/g, "")
+    .replace(/\\/g, "/")
+    .trim();
+  if (!cleaned || cleaned.length > MAX_PATH_LENGTH) return null;
+  return cleaned;
+}
+
+function escapeCssString(value) {
   return String(value)
     .replace(/\\/g, "\\\\")
     .replace(/"/g, '\\"')
-    .replace(/\n/g, " ");
+    .replace(/\r/g, "\\d ")
+    .replace(/\n/g, "\\a ")
+    .replace(/\f/g, "\\c ");
 }
 
-module.exports = class ObsidianColoriPlugin extends Plugin {
+function normalizeOverride(raw, settings) {
+  if (!raw || (raw.type !== "folder" && raw.type !== "file")) return null;
+
+  const path = sanitizePath(raw.path);
+  if (!path) return null;
+
+  const fallbackColor =
+    raw.type === "folder" ? settings.folderColor : settings.noteColor;
+  const fallbackSize =
+    raw.type === "folder" ? settings.folderSize : settings.noteSize;
+
+  return {
+    type: raw.type,
+    path,
+    color: sanitizeColor(raw.color, fallbackColor),
+    size: sanitizeSize(raw.size, 10, 40, fallbackSize),
+    icon: sanitizeIcon(raw.icon)
+  };
+}
+
+function normalizeSettings(raw) {
+  const source = raw && typeof raw === "object" ? raw : {};
+  const result = { ...DEFAULT_SETTINGS, overrides: [] };
+
+  for (const key of Object.keys(CSS_VARIABLES)) {
+    if (key.endsWith("Color")) {
+      result[key] = sanitizeColor(source[key], DEFAULT_SETTINGS[key]);
+    } else if (key.endsWith("Size")) {
+      const [min, max] = SIZE_LIMITS[key];
+      result[key] = sanitizeSize(
+        source[key],
+        min,
+        max,
+        DEFAULT_SETTINGS[key]
+      );
+    }
+  }
+
+  result.folderIcon = sanitizeIcon(source.folderIcon);
+  result.noteIcon = sanitizeIcon(source.noteIcon);
+
+  if (Array.isArray(source.overrides)) {
+    const seen = new Set();
+    for (const rawOverride of source.overrides) {
+      const override = normalizeOverride(rawOverride, result);
+      if (!override) continue;
+
+      const key = `${override.type}:${override.path}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      result.overrides.push(override);
+    }
+  }
+
+  return result;
+}
+
+module.exports = class ColoriPlugin extends Plugin {
   async onload() {
     await this.loadSettings();
 
     this.overrideStyleEl = document.createElement("style");
-    this.overrideStyleEl.id = "obsidian-colori-overrides";
+    this.overrideStyleEl.id = "colori-overrides";
     document.head.appendChild(this.overrideStyleEl);
+    this.register(() => this.overrideStyleEl?.remove());
 
     this.applySettings();
-    this.addSettingTab(new ObsidianColoriSettingTab(this.app, this));
+    this.addSettingTab(new ColoriSettingTab(this.app, this));
 
     this.registerEvent(
       this.app.workspace.on("file-menu", (menu, file) => {
@@ -98,45 +192,53 @@ module.exports = class ObsidianColoriPlugin extends Plugin {
         });
       })
     );
+
+    this.registerEvent(
+      this.app.vault.on("rename", async (file, oldPath) => {
+        await this.handleRename(file, oldPath);
+      })
+    );
+
+    this.registerEvent(
+      this.app.vault.on("delete", async (file) => {
+        await this.handleDelete(file);
+      })
+    );
   }
 
   onunload() {
     this.clearSettings();
-    if (this.overrideStyleEl) this.overrideStyleEl.remove();
   }
 
   async loadSettings() {
-    const saved = await this.loadData();
-    this.settings = Object.assign({}, DEFAULT_SETTINGS, saved || {});
-    if (!Array.isArray(this.settings.overrides)) {
-      this.settings.overrides = [];
-    }
+    this.settings = normalizeSettings(await this.loadData());
   }
 
   async saveSettings() {
+    this.settings = normalizeSettings(this.settings);
     await this.saveData(this.settings);
     this.applySettings();
   }
 
   applySettings() {
     const root = document.body;
+    if (!root) return;
 
     for (const [key, cssVariable] of Object.entries(CSS_VARIABLES)) {
       const value = this.settings[key];
-      if (key.endsWith("Size")) {
-        root.style.setProperty(cssVariable, `${value}px`);
-      } else {
-        root.style.setProperty(cssVariable, value);
-      }
+      root.style.setProperty(
+        cssVariable,
+        key.endsWith("Size") ? `${value}px` : value
+      );
     }
 
     root.style.setProperty(
       "--ct-folder-icon",
-      `"${escapeCssContent(this.settings.folderIcon || "")}"`
+      `"${escapeCssString(this.settings.folderIcon)}"`
     );
     root.style.setProperty(
       "--ct-note-icon",
-      `"${escapeCssContent(this.settings.noteIcon || "")}"`
+      `"${escapeCssString(this.settings.noteIcon)}"`
     );
 
     this.renderOverrideCss();
@@ -144,6 +246,8 @@ module.exports = class ObsidianColoriPlugin extends Plugin {
 
   clearSettings() {
     const root = document.body;
+    if (!root) return;
+
     for (const cssVariable of Object.values(CSS_VARIABLES)) {
       root.style.removeProperty(cssVariable);
     }
@@ -157,36 +261,42 @@ module.exports = class ObsidianColoriPlugin extends Plugin {
     const rules = [];
 
     for (const override of this.settings.overrides) {
-      if (!override || !override.path || !override.type) continue;
+      const path = escapeCssString(override.path);
+      const color = sanitizeColor(
+        override.color,
+        override.type === "folder"
+          ? this.settings.folderColor
+          : this.settings.noteColor
+      );
+      const size = sanitizeSize(
+        override.size,
+        10,
+        40,
+        override.type === "folder"
+          ? this.settings.folderSize
+          : this.settings.noteSize
+      );
+      const icon = escapeCssString(sanitizeIcon(override.icon));
 
-      const path = escapeCssAttribute(override.path);
-      const color = override.color || "";
-      const size = Number(override.size) || 14;
-      const icon = escapeCssContent(override.icon || "");
+      const selector =
+        override.type === "folder"
+          ? `.nav-folder-title[data-path="${path}"] .nav-folder-title-content`
+          : `.nav-file-title[data-path="${path}"] .nav-file-title-content`;
 
-      if (override.type === "folder") {
-        const base = `.nav-folder-title[data-path="${path}"] .nav-folder-title-content`;
-        rules.push(`${base} {
-          ${color ? `color: ${color} !important;` : ""}
-          font-size: ${size}px !important;
-        }`);
+      rules.push(`${selector} {
+        color: ${color} !important;
+        font-size: ${size}px !important;
+      }`);
 
-        rules.push(`${base}::before {
+      if (icon) {
+        rules.push(`${selector}::before {
           content: "${icon}";
-          ${icon ? "margin-right: 0.4em;" : ""}
+          margin-right: 0.4em;
         }`);
-      }
-
-      if (override.type === "file") {
-        const base = `.nav-file-title[data-path="${path}"] .nav-file-title-content`;
-        rules.push(`${base} {
-          ${color ? `color: ${color} !important;` : ""}
-          font-size: ${size}px !important;
-        }`);
-
-        rules.push(`${base}::before {
-          content: "${icon}";
-          ${icon ? "margin-right: 0.4em;" : ""}
+      } else {
+        rules.push(`${selector}::before {
+          content: "";
+          margin-right: 0;
         }`);
       }
     }
@@ -201,23 +311,27 @@ module.exports = class ObsidianColoriPlugin extends Plugin {
   }
 
   async upsertOverride(type, path, values) {
-    let override = this.getOverride(type, path);
+    const safePath = sanitizePath(path);
+    if ((type !== "folder" && type !== "file") || !safePath) return;
+
+    const fallbackColor =
+      type === "folder" ? this.settings.folderColor : this.settings.noteColor;
+    const fallbackSize =
+      type === "folder" ? this.settings.folderSize : this.settings.noteSize;
+
+    const safeValues = {
+      color: sanitizeColor(values.color, fallbackColor),
+      size: sanitizeSize(values.size, 10, 40, fallbackSize),
+      icon: sanitizeIcon(values.icon)
+    };
+
+    let override = this.getOverride(type, safePath);
 
     if (!override) {
-      override = {
-        type,
-        path,
-        color:
-          values.color ||
-          (type === "folder" ? this.settings.folderColor : this.settings.noteColor),
-        size:
-          values.size ||
-          (type === "folder" ? this.settings.folderSize : this.settings.noteSize),
-        icon: values.icon || ""
-      };
+      override = { type, path: safePath, ...safeValues };
       this.settings.overrides.push(override);
     } else {
-      Object.assign(override, values);
+      Object.assign(override, safeValues);
     }
 
     await this.saveSettings();
@@ -235,8 +349,55 @@ module.exports = class ObsidianColoriPlugin extends Plugin {
     new OverrideEditorModal(this.app, this, type, file.path).open();
   }
 
+  async handleRename(file, oldPath) {
+    const newPath = sanitizePath(file.path);
+    const safeOldPath = sanitizePath(oldPath);
+    if (!newPath || !safeOldPath || newPath === safeOldPath) return;
+
+    let changed = false;
+
+    for (const override of this.settings.overrides) {
+      if (override.path === safeOldPath) {
+        override.path = newPath;
+        changed = true;
+        continue;
+      }
+
+      if (
+        file instanceof TFolder &&
+        override.path.startsWith(`${safeOldPath}/`)
+      ) {
+        override.path = `${newPath}${override.path.slice(safeOldPath.length)}`;
+        changed = true;
+      }
+    }
+
+    if (changed) await this.saveSettings();
+  }
+
+  async handleDelete(file) {
+    const deletedPath = sanitizePath(file.path);
+    if (!deletedPath) return;
+
+    const before = this.settings.overrides.length;
+    this.settings.overrides = this.settings.overrides.filter((override) => {
+      if (override.path === deletedPath) return false;
+      if (
+        file instanceof TFolder &&
+        override.path.startsWith(`${deletedPath}/`)
+      ) {
+        return false;
+      }
+      return true;
+    });
+
+    if (this.settings.overrides.length !== before) {
+      await this.saveSettings();
+    }
+  }
+
   async resetSettings() {
-    this.settings = JSON.parse(JSON.stringify(DEFAULT_SETTINGS));
+    this.settings = { ...DEFAULT_SETTINGS, overrides: [] };
     await this.saveSettings();
   }
 };
@@ -253,9 +414,13 @@ class OverrideEditorModal extends Modal {
       ? { ...existing }
       : {
           color:
-            type === "folder" ? plugin.settings.folderColor : plugin.settings.noteColor,
+            type === "folder"
+              ? plugin.settings.folderColor
+              : plugin.settings.noteColor,
           size:
-            type === "folder" ? plugin.settings.folderSize : plugin.settings.noteSize,
+            type === "folder"
+              ? plugin.settings.folderSize
+              : plugin.settings.noteSize,
           icon: ""
         };
   }
@@ -277,35 +442,42 @@ class OverrideEditorModal extends Modal {
       .setName("Color")
       .setDesc("Override the global title color.")
       .addColorPicker((picker) =>
-        picker
-          .setValue(this.values.color)
-          .onChange((value) => {
-            this.values.color = value;
-          })
+        picker.setValue(this.values.color).onChange((value) => {
+          this.values.color = sanitizeColor(
+            value,
+            this.type === "folder"
+              ? this.plugin.settings.folderColor
+              : this.plugin.settings.noteColor
+          );
+        })
       );
 
-    new Setting(contentEl)
+    const sizeSetting = new Setting(contentEl)
       .setName("Font size")
-      .setDesc(`${this.values.size} px`)
-      .addSlider((slider) =>
-        slider
-          .setLimits(10, 40, 1)
-          .setValue(this.values.size)
-          .setDynamicTooltip()
-          .onChange((value) => {
-            this.values.size = value;
-          })
-      );
+      .setDesc(`${this.values.size} px`);
+
+    sizeSetting.addSlider((slider) =>
+      slider
+        .setLimits(10, 40, 1)
+        .setValue(this.values.size)
+        .setDynamicTooltip()
+        .onChange((value) => {
+          this.values.size = sanitizeSize(value, 10, 40, 14);
+          sizeSetting.setDesc(`${this.values.size} px`);
+        })
+    );
 
     new Setting(contentEl)
       .setName("Icon")
-      .setDesc("Optional emoji or symbol, for example 📁, 🛡️, ⭐, 🔥.")
+      .setDesc("Optional emoji or symbol. Limited to 12 characters.")
       .addText((text) =>
         text
           .setPlaceholder("e.g. 🛡️")
           .setValue(this.values.icon || "")
           .onChange((value) => {
-            this.values.icon = value;
+            const safeIcon = sanitizeIcon(value);
+            this.values.icon = safeIcon;
+            if (value !== safeIcon) text.setValue(safeIcon);
           })
       );
 
@@ -366,7 +538,7 @@ class VaultItemSuggestModal extends FuzzySuggestModal {
   }
 }
 
-class ObsidianColoriSettingTab extends PluginSettingTab {
+class ColoriSettingTab extends PluginSettingTab {
   constructor(app, plugin) {
     super(app, plugin);
     this.plugin = plugin;
@@ -376,7 +548,7 @@ class ObsidianColoriSettingTab extends PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
 
-    containerEl.createEl("h2", { text: "Obsidian Colori" });
+    containerEl.createEl("h2", { text: "Colori" });
     containerEl.createEl("p", {
       text: "Global styles apply everywhere. Individual overrides take priority."
     });
@@ -430,7 +602,12 @@ class ObsidianColoriSettingTab extends PluginSettingTab {
       .addButton((button) =>
         button.setButtonText("Choose folder").onClick(() => {
           new VaultItemSuggestModal(this.app, "folder", (folder) => {
-            new OverrideEditorModal(this.app, this.plugin, "folder", folder.path).open();
+            new OverrideEditorModal(
+              this.app,
+              this.plugin,
+              "folder",
+              folder.path
+            ).open();
           }).open();
         })
       );
@@ -441,14 +618,19 @@ class ObsidianColoriSettingTab extends PluginSettingTab {
       .addButton((button) =>
         button.setButtonText("Choose note").onClick(() => {
           new VaultItemSuggestModal(this.app, "file", (file) => {
-            new OverrideEditorModal(this.app, this.plugin, "file", file.path).open();
+            new OverrideEditorModal(
+              this.app,
+              this.plugin,
+              "file",
+              file.path
+            ).open();
           }).open();
         })
       );
 
     if (this.plugin.settings.overrides.length === 0) {
       containerEl.createEl("p", {
-        text: "No individual overrides yet. You can also right-click any note or folder in the File Explorer and choose ‘Customize title’.",
+        text: "No individual overrides yet. You can also right-click any note or folder in the File Explorer and choose “Customize title”.",
         cls: "ct-muted"
       });
     } else {
@@ -534,18 +716,20 @@ class ObsidianColoriSettingTab extends PluginSettingTab {
   }
 
   addColorAndSize(name, description, colorKey, sizeKey, min, max) {
-    const colorSetting = new Setting(this.containerEl)
+    new Setting(this.containerEl)
       .setName(`${name} color`)
-      .setDesc(description);
-
-    colorSetting.addColorPicker((picker) => {
-      picker
-        .setValue(this.plugin.settings[colorKey])
-        .onChange(async (value) => {
-          this.plugin.settings[colorKey] = value;
-          await this.plugin.saveSettings();
-        });
-    });
+      .setDesc(description)
+      .addColorPicker((picker) => {
+        picker
+          .setValue(this.plugin.settings[colorKey])
+          .onChange(async (value) => {
+            this.plugin.settings[colorKey] = sanitizeColor(
+              value,
+              DEFAULT_SETTINGS[colorKey]
+            );
+            await this.plugin.saveSettings();
+          });
+      });
 
     const sizeSetting = new Setting(this.containerEl)
       .setName(`${name} font size`)
@@ -557,8 +741,13 @@ class ObsidianColoriSettingTab extends PluginSettingTab {
         .setValue(this.plugin.settings[sizeKey])
         .setDynamicTooltip()
         .onChange(async (value) => {
-          this.plugin.settings[sizeKey] = value;
-          sizeSetting.setDesc(`${value} px`);
+          this.plugin.settings[sizeKey] = sanitizeSize(
+            value,
+            min,
+            max,
+            DEFAULT_SETTINGS[sizeKey]
+          );
+          sizeSetting.setDesc(`${this.plugin.settings[sizeKey]} px`);
           await this.plugin.saveSettings();
         });
     });
@@ -573,7 +762,9 @@ class ObsidianColoriSettingTab extends PluginSettingTab {
           .setPlaceholder("e.g. 📁")
           .setValue(this.plugin.settings[key] || "")
           .onChange(async (value) => {
-            this.plugin.settings[key] = value;
+            const safeIcon = sanitizeIcon(value);
+            this.plugin.settings[key] = safeIcon;
+            if (value !== safeIcon) text.setValue(safeIcon);
             await this.plugin.saveSettings();
           })
       );
