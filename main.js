@@ -768,6 +768,16 @@ class AppearanceModal extends Modal {
     const { contentEl } = this;
     contentEl.empty();
     contentEl.addClass("ct-item-modal");
+
+    const nav = new Setting(contentEl);
+    nav.settingEl.addClass("ct-clean-setting", "ct-back-row");
+    nav.addButton((button) =>
+      button.setButtonText("Back").setIcon("arrow-left").onClick(() => {
+        this.close();
+        new ColoriLauncherModal(this.app, this.plugin, this.file).open();
+      })
+    );
+
     contentEl.createEl("h2", { text: "Customize appearance" });
     contentEl.createEl("p", { text: this.path, cls: "ct-path-preview" });
 
@@ -855,6 +865,16 @@ class GraphModal extends Modal {
     const { contentEl } = this;
     contentEl.empty();
     contentEl.addClass("ct-graph-modal");
+
+    const nav = new Setting(contentEl);
+    nav.settingEl.addClass("ct-clean-setting", "ct-back-row");
+    nav.addButton((button) =>
+      button.setButtonText("Back").setIcon("arrow-left").onClick(() => {
+        this.close();
+        new ColoriLauncherModal(this.app, this.plugin, this.file).open();
+      })
+    );
+
     contentEl.createEl("h2", { text: "Graph" });
     contentEl.createEl("p", { text: this.file.path, cls: "ct-path-preview" });
 
