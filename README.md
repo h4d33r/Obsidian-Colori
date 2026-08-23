@@ -13,13 +13,17 @@ It provides controls for **color, font size, and optional icons**. Global styles
 - Add optional emoji or Unicode icons to folders and notes
 - Set default icons globally
 - Apply per-folder and per-note overrides
-- Right-click a note or folder and choose **Customize title**
+- Use one **Colori** right-click action for item-specific controls
 - Reset an individual title so it inherits the global defaults again
-- Create or update a folder hub note from the folder's File Explorer menu
+- Create folder hub notes that auto-sync when direct child notes are added, moved, renamed, or removed
+- Revert a folder hub by disabling sync and removing only Colori-managed links
+- Safely delete a generated hub note only when it contains no additional user content
+- Connect one Markdown note to another through Colori-managed real Obsidian links
+- Manage or remove Colori note connections later
 - Show the global note and active-note colors in Graph view
 - Search for notes and folders from plugin settings
 - Automatically follow renamed files and folders
-- Automatically remove stale overrides when files or folders are deleted
+- Automatically remove stale overrides and graph configuration when files or folders are deleted
 - Reset all settings to defaults
 
 ## Privacy and security
@@ -32,17 +36,17 @@ Colori is designed to be local-first and minimal.
 - No account or cloud service required
 - No shell commands
 - No Node.js filesystem access
-- No modification of Markdown note contents unless you explicitly choose **Create/update graph hub**
 - Settings are stored locally using Obsidian's built-in plugin data API
 - User-controlled values are validated before being used for generated styles
-
-Colori only changes how titles and headings are displayed in the Obsidian interface.
+- Graph features use Obsidian vault APIs rather than direct filesystem access
+- Colori only writes inside clearly marked managed sections when you explicitly enable a graph feature
+- If managed markers are malformed, Colori refuses to rewrite that section rather than guessing
 
 ## Installation
 
 ### Manual installation
 
-1. Download the latest release.
+1. Download the version you want to test.
 2. Create this folder inside your vault:
 
 ```text
@@ -57,10 +61,11 @@ manifest.json
 styles.css
 ```
 
-4. Restart Obsidian or reload the app.
-5. Open **Settings -> Community plugins**.
-6. Enable **Colori**.
-7. Open **Settings -> Colori** to configure it.
+4. Keep your existing `data.json` if you are updating and want to preserve settings.
+5. Restart Obsidian or reload the app.
+6. Open **Settings -> Community plugins**.
+7. Enable **Colori**.
+8. Open **Settings -> Colori** to configure it.
 
 ### Migrating from an earlier development build
 
@@ -74,38 +79,60 @@ Keep the existing `data.json` in that folder if you want to preserve your saved 
 
 ## Individual customization
 
-You can customize a specific item in two ways.
+Right-click a Markdown note or folder and choose **Colori**.
 
-### File Explorer
+The Colori window keeps the item-specific controls together:
 
-Right-click a note or folder and select **Customize title**.
+- Color and font size on the same row
+- Optional icon below them
+- Reset to default
+- Graph controls relevant to the selected note or folder
 
-You can then assign:
-
-- Color
-- Font size
-- Optional icon
-
-### Settings
-
-Open **Settings -> Colori -> Individual overrides** and choose a folder or note.
-
-Use **Reset to default** in the Customize title window to remove that item's
-override. The item will immediately inherit the current global Colori style.
+The same appearance overrides can also be created from **Settings -> Colori -> Individual overrides**.
 
 ## Folder graph hubs
 
-Right-click a folder in the File Explorer and select **Create/update graph hub**.
-Colori creates a Markdown note with the same name inside that folder and adds
-links to every Markdown note directly inside it. Obsidian then displays the hub
-and its real connections in Graph view.
+Right-click a folder, choose **Colori**, then enable its folder hub.
 
-Running the action again refreshes only the section between Colori's hub
-markers. Any content you write outside that managed section is preserved.
+Colori creates a Markdown note with the same name inside that folder and places links to every Markdown note directly inside the folder in a managed section.
 
-Colori uses Obsidian's documented Graph CSS variables to match resolved nodes
-to the global note color and the focused node to the active-note color. It does
-not hook into Graph view's private renderer or add Graph view context-menu actions.
+Once enabled, the hub is automatically synchronized when direct child notes are:
+
+- created
+- deleted
+- renamed
+- moved into the folder
+- moved out of the folder
+
+You can still use **Sync now** manually.
+
+To revert the feature, choose **Remove hub links**. This disables auto-sync and removes only the section between Colori's hub markers. Other content in the note is preserved.
+
+**Delete if safe** removes the generated hub note only when the remaining note contains no user-added content. Otherwise Colori keeps the note and removes only its managed section.
+
+## Note-to-note graph connections
+
+Right-click a Markdown note and choose **Colori -> Connect to note** from the Colori window.
+
+Choose another Markdown note and Colori adds a real Obsidian Markdown link inside this managed section:
+
+```text
+<!-- colori-connections:start -->
+...
+<!-- colori-connections:end -->
+```
+
+Because these are normal Obsidian links, Graph view displays the connection normally.
+
+Use **Manage connections** to remove one connection or all Colori-managed outgoing connections from that note.
+
+Colori updates stored connection paths when notes or folders are renamed and removes stale connection records when referenced items are deleted.
+
+## Graph colors
+
+Colori uses Obsidian's Graph CSS variables to match resolved nodes to the global note color and the focused node to the active-note color.
+
+It does not replace or hook into the private Graph renderer.
 
 ## Icons
 
@@ -117,11 +144,20 @@ Examples:
 
 ## How it works
 
-Colori uses Obsidian's plugin API for settings, vault item selection, and context-menu integration. Global appearance values are exposed as CSS variables. Per-item overrides generate narrowly scoped CSS rules that target the selected file or folder path.
+Colori uses Obsidian's plugin API for settings, vault item selection, context-menu integration, file lifecycle events, and graph-related Markdown links.
 
-Appearance preferences are stored separately as plugin settings. Colori writes
-to a note only when you explicitly create or refresh a folder graph hub, and it
-limits later refreshes to the marked hub section.
+Global appearance values are exposed as CSS variables. Per-item overrides generate narrowly scoped CSS rules that target the selected file or folder path.
+
+Graph features are reversible. Colori tracks enabled folder hubs and note connections in plugin settings while writing only their corresponding managed Markdown sections into notes.
+
+## Development workflow
+
+The repository uses a simple workflow:
+
+- `main` is the stable branch
+- `dev` is used for features currently being tested
+- stable versions should receive clear version tags
+- releases are created only after the tested development state is accepted
 
 ## License
 
