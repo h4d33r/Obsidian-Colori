@@ -1,53 +1,52 @@
-# Obsidian Colori
+# Colori
 
-**Obsidian Colori** is a lightweight Obsidian plugin for visually customizing your vault without manually editing CSS snippets.
+**Colori** is a lightweight Obsidian plugin for customizing folder, note, active-note, inline-title, and Markdown heading appearance without manually editing CSS snippets.
 
-It provides simple controls for changing the **color, font size, and optional icon** of folders and note titles directly from Obsidian. Global styles can be used as defaults, while individual folders and notes can have their own overrides.
+It provides controls for **color, font size, and optional icons**. Global styles act as defaults, while individual folders and notes can have their own overrides.
 
 ## Features
 
-- Customize folder title color and font size
-- Customize note/file title color and font size
+- Customize folder and note title colors and font sizes
 - Customize the active note title
 - Customize the inline note title
 - Customize H1-H6 heading colors and font sizes
-- Add optional icons to folders and notes
+- Add optional emoji or Unicode icons to folders and notes
 - Set default icons globally
-- Apply individual overrides to specific folders
-- Apply individual overrides to specific notes
-- Right-click a note or folder in the File Explorer and choose **Customize title**
-- Search for notes and folders from the plugin settings
-- Edit or remove existing overrides
-- Changes are saved automatically
+- Apply per-folder and per-note overrides
+- Right-click a note or folder and choose **Customize title**
+- Search for notes and folders from plugin settings
+- Automatically follow renamed files and folders
+- Automatically remove stale overrides when files or folders are deleted
+- Reset all settings to defaults
 
-## Example
+## Privacy and security
 
-You can style your File Explorer like this:
+Colori is designed to be local-first and minimal.
 
-```text
-📁 Projects
-🛡️ Cyber Security
-📷 Photography
+- No network requests
+- No telemetry or analytics
+- No ads
+- No account or cloud service required
+- No shell commands
+- No Node.js filesystem access
+- No modification of Markdown note contents
+- Settings are stored locally using Obsidian's built-in plugin data API
+- User-controlled values are validated before being used for generated styles
 
-   🧪 Malware Analysis.md
-   🔥 Important.md
-   ✅ Completed Tasks.md
-```
-
-Each folder or note can have its own color, font size, and icon.
+Colori only changes how titles and headings are displayed in the Obsidian interface.
 
 ## Installation
 
-Obsidian Colori is currently a private plugin and is installed manually.
+### Manual installation
 
-1. Download or clone this repository.
-2. Create the following folder inside your Obsidian vault:
+1. Download the latest release.
+2. Create this folder inside your vault:
 
 ```text
-.obsidian/plugins/obsidian-colori/
+.obsidian/plugins/colori/
 ```
 
-3. Copy these files into that folder:
+3. Copy these files into the folder:
 
 ```text
 main.js
@@ -55,40 +54,60 @@ manifest.json
 styles.css
 ```
 
-4. Restart Obsidian, or reload the app.
-5. Go to **Settings → Community plugins**.
-6. Enable **Obsidian Colori**.
-7. Open **Settings → Obsidian Colori** to configure it.
+4. Restart Obsidian or reload the app.
+5. Open **Settings -> Community plugins**.
+6. Enable **Colori**.
+7. Open **Settings -> Colori** to configure it.
 
-If you previously used the old CSS snippet or the earlier plugin version, disable the old snippet to avoid conflicting styles.
+### Migrating from an earlier development build
+
+Earlier development versions used a different plugin ID. If you already use one of those versions, rename its plugin folder to:
+
+```text
+colori
+```
+
+Keep the existing `data.json` in that folder if you want to preserve your saved settings, then replace `main.js`, `manifest.json`, and `styles.css` with the new files.
 
 ## Individual customization
 
-There are two ways to customize a specific item.
+You can customize a specific item in two ways.
 
-### From the File Explorer
+### File Explorer
 
-Right-click any note or folder and select **Customize title**.
+Right-click a note or folder and select **Customize title**.
 
 You can then assign:
 
 - Color
 - Font size
-- Icon
+- Optional icon
 
-### From Settings
+### Settings
 
-Open **Settings → Obsidian Colori → Individual overrides** and choose a folder or note to configure its appearance.
+Open **Settings -> Colori -> Individual overrides** and choose a folder or note.
 
 ## Icons
 
-Icons are currently implemented using emoji or Unicode symbols, so there is no external icon-library dependency.
+Icons use emoji or Unicode symbols, so Colori has no external icon-library dependency.
 
-Examples: `📁` `🛡️` `⭐` `🔥` `🧪` `📝` `✅` `⚠️` `💻` `📚`
+Examples:
+
+`📁` `🛡️` `⭐` `🔥` `🧪` `📝` `✅` `⚠️` `💻` `📚`
+
+## How it works
+
+Colori uses Obsidian's plugin API for settings, vault item selection, and context-menu integration. Global appearance values are exposed as CSS variables. Per-item overrides generate narrowly scoped CSS rules that target the selected file or folder path.
+
+The plugin does not rewrite note files. Appearance preferences are stored separately as plugin settings.
+
+## License
+
+Colori is released under the MIT License. See [LICENSE](LICENSE).
 
 ## Project status
 
-This project is being actively developed for personal use. Future improvements and updates will be maintained in this repository.
+Colori is under active development. Releases and future updates are maintained in this repository.
 
 ---
 
