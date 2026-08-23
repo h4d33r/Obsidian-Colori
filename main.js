@@ -216,7 +216,6 @@ function replaceManagedSection(current, startMarker, endMarker, newSection) {
   }
 
   if (start < 0 || end < start) return null;
-
   return current.slice(0, start) + newSection + current.slice(end + endMarker.length);
 }
 
@@ -256,28 +255,14 @@ module.exports = class ColoriPlugin extends Plugin {
           item
             .setTitle("Colori")
             .setIcon("palette")
-            .onClick(() => new ColoriItemModal(this.app, this, file).open());
+            .onClick(() => new ColoriLauncherModal(this.app, this, file).open());
         });
       })
     );
 
-    this.registerEvent(
-      this.app.vault.on("create", async (file) => {
-        await this.handleCreate(file);
-      })
-    );
-
-    this.registerEvent(
-      this.app.vault.on("rename", async (file, oldPath) => {
-        await this.handleRename(file, oldPath);
-      })
-    );
-
-    this.registerEvent(
-      this.app.vault.on("delete", async (file) => {
-        await this.handleDelete(file);
-      })
-    );
+    this.registerEvent(this.app.vault.on("create", async (file) => this.handleCreate(file)));
+    this.registerEvent(this.app.vault.on("rename", async (file, oldPath) => this.handleRename(file, oldPath)));
+    this.registerEvent(this.app.vault.on("delete", async (file) => this.handleDelete(file)));
   }
 
   onunload() {
@@ -307,14 +292,12 @@ module.exports = class ColoriPlugin extends Plugin {
     root.style.setProperty("--ct-note-icon", `"${escapeCssString(this.settings.noteIcon)}"`);
     root.style.setProperty("--graph-node", this.settings.noteColor);
     root.style.setProperty("--graph-node-focused", this.settings.activeNoteColor);
-
     this.renderOverrideCss();
   }
 
   clearSettings() {
     const root = document.body;
     if (!root) return;
-
     for (const cssVariable of Object.values(CSS_VARIABLES)) root.style.removeProperty(cssVariable);
     root.style.removeProperty("--ct-folder-icon");
     root.style.removeProperty("--ct-note-icon");
@@ -324,8 +307,8 @@ module.exports = class ColoriPlugin extends Plugin {
 
   renderOverrideCss() {
     if (!this.overrideStyleEl) return;
-
     const rules = [];
+
     for (const override of this.settings.overrides) {
       const path = escapeCssString(override.path);
       const color = sanitizeColor(
@@ -713,7 +696,53 @@ module.exports = class ColoriPlugin extends Plugin {
   }
 };
 
-class ColoriItemModal extends Modal {
+class ColoriLauncherModal extends Modal {
+  constructor(app, plugin, file) {
+    super(app);
+    this.plugin = plugin;
+    this.file = file;
+  }
+
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.addClass("ct-launcher-modal");
+    contentEl.createEl("h2", { text: "Colori" });
+    contentEl.createEl("p", { text: this.file.path, cls: "ct-path-preview" });
+
+    const appearance = new Setting(contentEl)
+      .setName("Customize appearance")
+      .setDesc("Change this item's title color, font size, and icon.");
+    appearance.settingEl.addClass("ct-launcher-option");
+    appearance.addButton((button) =>
+      button.setButtonText("Open").setIcon("chevron-right").onClick(() => {
+        this.close();
+        new AppearanceModal(this.app, this.plugin, this.file).open();
+      })
+    );
+
+    const graph = new Setting(contentEl)
+      .setName("Graph")
+      .setDesc(
+        this.file instanceof TFolder
+          ? "Create and manage this folder's graph hub."
+          : "Create and manage this note's Colori connections."
+      );
+    graph.settingEl.addClass("ct-launcher-option");
+    graph.addButton((button) =>
+      button.setButtonText("Open").setIcon("chevron-right").onClick(() => {
+        this.close();
+        new GraphModal(this.app, this.plugin, this.file).open();
+      })
+    );
+  }
+
+  onClose() {
+    this.contentEl.empty();
+  }
+}
+
+class AppearanceModal extends Modal {
   constructor(app, plugin, file) {
     super(app);
     this.plugin = plugin;
@@ -739,10 +768,8 @@ class ColoriItemModal extends Modal {
     const { contentEl } = this;
     contentEl.empty();
     contentEl.addClass("ct-item-modal");
-
-    contentEl.createEl("h2", { text: "Colori" });
+    contentEl.createEl("h2", { text: "Customize appearance" });
     contentEl.createEl("p", { text: this.path, cls: "ct-path-preview" });
-    contentEl.createEl("h3", { text: "Appearance", cls: "ct-modal-section" });
 
     const appearance = new Setting(contentEl).setName("Title");
     appearance.settingEl.addClass("ct-inline-controls");
@@ -771,7 +798,7 @@ class ColoriItemModal extends Modal {
         })
     );
 
-    new Setting(contentEl)
+    const iconSetting = new Setting(contentEl)
       .setName("Icon")
       .setDesc("Optional emoji or symbol.")
       .addText((text) =>
@@ -784,9 +811,11 @@ class ColoriItemModal extends Modal {
             if (value !== safeIcon) text.setValue(safeIcon);
           })
       );
+    iconSetting.settingEl.addClass("ct-clean-setting");
 
-    const appearanceActions = new Setting(contentEl);
-    appearanceActions.addButton((button) =>
+    const actions = new Setting(contentEl);
+    actions.settingEl.addClass("ct-clean-setting", "ct-modal-actions");
+    actions.addButton((button) =>
       button.setButtonText("Reset to default").onClick(async () => {
         await this.plugin.removeOverride(this.type, this.path);
         this.values = {
@@ -797,77 +826,104 @@ class ColoriItemModal extends Modal {
         this.render();
       })
     );
-    appearanceActions.addButton((button) =>
-      button.setButtonText("Save appearance").setCta().onClick(async () => {
+    actions.addButton((button) =>
+      button.setButtonText("Save").setCta().onClick(async () => {
         await this.plugin.upsertOverride(this.type, this.path, this.values);
         new Notice("Colori appearance saved.");
+        this.close();
       })
     );
+  }
 
-    contentEl.createEl("h3", { text: "Graph", cls: "ct-modal-section" });
+  onClose() {
+    this.contentEl.empty();
+  }
+}
+
+class GraphModal extends Modal {
+  constructor(app, plugin, file) {
+    super(app);
+    this.plugin = plugin;
+    this.file = file;
+  }
+
+  onOpen() {
+    this.render();
+  }
+
+  render() {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.addClass("ct-graph-modal");
+    contentEl.createEl("h2", { text: "Graph" });
+    contentEl.createEl("p", { text: this.file.path, cls: "ct-path-preview" });
 
     if (this.file instanceof TFolder) {
       const enabled = this.plugin.isFolderHubEnabled(this.file.path);
-      new Setting(contentEl)
+      const hub = new Setting(contentEl)
         .setName("Folder hub")
         .setDesc(
           enabled
-            ? "Auto-sync is on. Colori updates the hub when notes are added, moved, renamed, or removed."
-            : "Create a hub note and keep its direct note links synchronized automatically."
-        )
-        .addButton((button) => {
-          if (!enabled) {
-            button.setButtonText("Enable hub").setCta().onClick(async () => {
-              await this.plugin.enableFolderHub(this.file);
-              this.render();
-            });
-          } else {
-            button.setButtonText("Sync now").onClick(async () => {
-              await this.plugin.syncFolderHub(this.file, false);
-            });
-          }
-        });
+            ? "Auto-sync is on. Colori keeps direct note links synchronized automatically."
+            : "Create a hub note linked to every Markdown note directly inside this folder."
+        );
+      hub.settingEl.addClass("ct-clean-setting");
+      hub.addButton((button) => {
+        if (!enabled) {
+          button.setButtonText("Enable hub").setCta().onClick(async () => {
+            await this.plugin.enableFolderHub(this.file);
+            this.render();
+          });
+        } else {
+          button.setButtonText("Sync now").onClick(async () => {
+            await this.plugin.syncFolderHub(this.file, false);
+          });
+        }
+      });
 
       if (enabled) {
-        new Setting(contentEl)
-          .setName("Revert folder hub")
-          .setDesc("Disable auto-sync and remove only the section managed by Colori.")
-          .addButton((button) =>
-            button.setButtonText("Remove hub links").setWarning().onClick(async () => {
-              await this.plugin.disableFolderHub(this.file, false);
-              this.render();
-            })
-          )
-          .addButton((button) =>
-            button.setButtonText("Delete if safe").onClick(async () => {
-              await this.plugin.disableFolderHub(this.file, true);
-              this.close();
-            })
-          );
+        const remove = new Setting(contentEl)
+          .setName("Remove folder hub")
+          .setDesc("Disable auto-sync and remove only the section managed by Colori.");
+        remove.settingEl.addClass("ct-clean-setting");
+        remove.addButton((button) =>
+          button.setButtonText("Remove links").setWarning().onClick(async () => {
+            await this.plugin.disableFolderHub(this.file, false);
+            this.render();
+          })
+        );
+        remove.addButton((button) =>
+          button.setButtonText("Delete if safe").onClick(async () => {
+            await this.plugin.disableFolderHub(this.file, true);
+            this.close();
+          })
+        );
       }
     } else if (this.file instanceof TFile) {
       const count = this.plugin.getOutgoingConnections(this.file.path).length;
 
-      new Setting(contentEl)
+      const connect = new Setting(contentEl)
         .setName("Connect to note")
-        .setDesc("Create a real Obsidian link managed by Colori so it appears in Graph view.")
-        .addButton((button) =>
-          button.setButtonText("Choose note…").setCta().onClick(() => {
-            new NoteSuggestModal(this.app, this.file.path, async (target) => {
-              await this.plugin.addConnection(this.file, target);
-              this.render();
-            }).open();
-          })
-        );
+        .setDesc("Add a Colori-managed Obsidian link so the notes connect in Graph view.");
+      connect.settingEl.addClass("ct-clean-setting");
+      connect.addButton((button) =>
+        button.setButtonText("Choose note…").setCta().onClick(() => {
+          new NoteSuggestModal(this.app, this.file.path, async (target) => {
+            await this.plugin.addConnection(this.file, target);
+            this.render();
+          }).open();
+        })
+      );
 
-      new Setting(contentEl)
+      const manage = new Setting(contentEl)
         .setName("Manage connections")
-        .setDesc(`${count} outgoing Colori ${count === 1 ? "connection" : "connections"}.`)
-        .addButton((button) =>
-          button.setButtonText("Manage…").onClick(() => {
-            new ConnectionsModal(this.app, this.plugin, this.file).open();
-          })
-        );
+        .setDesc(`${count} outgoing Colori ${count === 1 ? "connection" : "connections"}.`);
+      manage.settingEl.addClass("ct-clean-setting");
+      manage.addButton((button) =>
+        button.setButtonText("Manage…").onClick(() => {
+          new ConnectionsModal(this.app, this.plugin, this.file).open();
+        })
+      );
     }
   }
 
@@ -911,6 +967,7 @@ class ConnectionsModal extends Modal {
   render() {
     const { contentEl } = this;
     contentEl.empty();
+    contentEl.addClass("ct-graph-modal");
     contentEl.createEl("h2", { text: "Colori connections" });
     contentEl.createEl("p", { text: this.sourceFile.path, cls: "ct-path-preview" });
 
@@ -921,25 +978,26 @@ class ConnectionsModal extends Modal {
     }
 
     for (const connection of connections) {
-      new Setting(contentEl)
-        .setName(connection.target)
-        .addExtraButton((button) =>
-          button.setIcon("trash").setTooltip("Remove connection").onClick(async () => {
-            await this.plugin.removeConnection(connection.source, connection.target);
-            this.render();
-          })
-        );
-    }
-
-    new Setting(contentEl)
-      .setName("Remove all")
-      .setDesc("Remove every Colori-managed outgoing connection from this note.")
-      .addButton((button) =>
-        button.setButtonText("Remove all").setWarning().onClick(async () => {
-          await this.plugin.removeAllConnections(this.sourceFile.path);
+      const row = new Setting(contentEl).setName(connection.target);
+      row.settingEl.addClass("ct-clean-setting");
+      row.addExtraButton((button) =>
+        button.setIcon("trash").setTooltip("Remove connection").onClick(async () => {
+          await this.plugin.removeConnection(connection.source, connection.target);
           this.render();
         })
       );
+    }
+
+    const removeAll = new Setting(contentEl)
+      .setName("Remove all")
+      .setDesc("Remove every Colori-managed outgoing connection from this note.");
+    removeAll.settingEl.addClass("ct-clean-setting");
+    removeAll.addButton((button) =>
+      button.setButtonText("Remove all").setWarning().onClick(async () => {
+        await this.plugin.removeAllConnections(this.sourceFile.path);
+        this.render();
+      })
+    );
   }
 
   onClose() {
@@ -984,17 +1042,17 @@ class ColoriSettingTab extends PluginSettingTab {
     containerEl.empty();
     containerEl.addClass("ct-settings-tab");
 
-    containerEl.createEl("h2", { text: "Colori" });
+    containerEl.createEl("h2", { text: "Colori Dev" });
     containerEl.createEl("p", {
       text: "Global styles apply everywhere. Individual overrides take priority. Right-click a note or folder and choose Colori for item-specific controls."
     });
 
     this.addSection("File explorer");
-    this.addColorAndSize("Folders", "Folder names in the file explorer.", "folderColor", "folderSize", 10, 30);
-    this.addIcon("Default folder icon", "Optional icon shown before every folder title.", "folderIcon");
-    this.addColorAndSize("Notes", "Note names in the file explorer.", "noteColor", "noteSize", 10, 30);
-    this.addIcon("Default note icon", "Optional icon shown before every note title.", "noteIcon");
-    this.addColorAndSize("Active note", "Currently selected note in the file explorer.", "activeNoteColor", "activeNoteSize", 10, 30);
+    this.addColorAndSize("Folder title", "Folder title color and font size.", "folderColor", "folderSize", 10, 30);
+    this.addIcon("Folder icon", "Optional icon shown before every folder title.", "folderIcon");
+    this.addColorAndSize("Note title", "Note title color and font size.", "noteColor", "noteSize", 10, 30);
+    this.addIcon("Note icon", "Optional icon shown before every note title.", "noteIcon");
+    this.addColorAndSize("Active note title", "Selected note title color and font size.", "activeNoteColor", "activeNoteSize", 10, 30);
 
     this.addSection("Individual overrides");
 
@@ -1004,7 +1062,7 @@ class ColoriSettingTab extends PluginSettingTab {
       .addButton((button) =>
         button.setButtonText("Choose folder").onClick(() => {
           new VaultItemSuggestModal(this.app, "folder", (folder) => {
-            new ColoriItemModal(this.app, this.plugin, folder).open();
+            new AppearanceModal(this.app, this.plugin, folder).open();
           }).open();
         })
       );
@@ -1015,7 +1073,7 @@ class ColoriSettingTab extends PluginSettingTab {
       .addButton((button) =>
         button.setButtonText("Choose note").onClick(() => {
           new VaultItemSuggestModal(this.app, "file", (file) => {
-            new ColoriItemModal(this.app, this.plugin, file).open();
+            new AppearanceModal(this.app, this.plugin, file).open();
           }).open();
         })
       );
@@ -1033,7 +1091,7 @@ class ColoriSettingTab extends PluginSettingTab {
           .addButton((button) =>
             button.setButtonText("Edit").onClick(() => {
               if (file instanceof TFile || file instanceof TFolder) {
-                new ColoriItemModal(this.app, this.plugin, file).open();
+                new AppearanceModal(this.app, this.plugin, file).open();
               } else {
                 new Notice("That vault item no longer exists.");
               }
@@ -1049,13 +1107,13 @@ class ColoriSettingTab extends PluginSettingTab {
     }
 
     this.addSection("Note title");
-    this.addColorAndSize("Inline title", "The note title displayed above the note content.", "inlineTitleColor", "inlineTitleSize", 12, 60);
+    this.addColorAndSize("Inline title", "Inline note title color and font size.", "inlineTitleColor", "inlineTitleSize", 12, 60);
 
     this.addSection("Markdown headings");
     for (let level = 1; level <= 6; level++) {
       this.addColorAndSize(
         `Heading ${level}`,
-        `H${level} in Reading view and Live Preview.`,
+        `H${level} color and font size in Reading view and Live Preview.`,
         `h${level}Color`,
         `h${level}Size`,
         10,
