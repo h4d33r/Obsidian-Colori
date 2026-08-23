@@ -72,60 +72,23 @@ body:not([style*='--ct-note-icon: ""']) .nav-file-title-content::before {
 }
 
 /* Reading view */
-.markdown-rendered h1 {
-  color: var(--ct-h1-color);
-  font-size: var(--ct-h1-size);
-}
-.markdown-rendered h2 {
-  color: var(--ct-h2-color);
-  font-size: var(--ct-h2-size);
-}
-.markdown-rendered h3 {
-  color: var(--ct-h3-color);
-  font-size: var(--ct-h3-size);
-}
-.markdown-rendered h4 {
-  color: var(--ct-h4-color);
-  font-size: var(--ct-h4-size);
-}
-.markdown-rendered h5 {
-  color: var(--ct-h5-color);
-  font-size: var(--ct-h5-size);
-}
-.markdown-rendered h6 {
-  color: var(--ct-h6-color);
-  font-size: var(--ct-h6-size);
-}
+.markdown-rendered h1 { color: var(--ct-h1-color); font-size: var(--ct-h1-size); }
+.markdown-rendered h2 { color: var(--ct-h2-color); font-size: var(--ct-h2-size); }
+.markdown-rendered h3 { color: var(--ct-h3-color); font-size: var(--ct-h3-size); }
+.markdown-rendered h4 { color: var(--ct-h4-color); font-size: var(--ct-h4-size); }
+.markdown-rendered h5 { color: var(--ct-h5-color); font-size: var(--ct-h5-size); }
+.markdown-rendered h6 { color: var(--ct-h6-color); font-size: var(--ct-h6-size); }
 
 /* Live Preview / Source mode (CM6) */
-.markdown-source-view.mod-cm6 .HyperMD-header-1 {
-  color: var(--ct-h1-color);
-  font-size: var(--ct-h1-size);
-}
-.markdown-source-view.mod-cm6 .HyperMD-header-2 {
-  color: var(--ct-h2-color);
-  font-size: var(--ct-h2-size);
-}
-.markdown-source-view.mod-cm6 .HyperMD-header-3 {
-  color: var(--ct-h3-color);
-  font-size: var(--ct-h3-size);
-}
-.markdown-source-view.mod-cm6 .HyperMD-header-4 {
-  color: var(--ct-h4-color);
-  font-size: var(--ct-h4-size);
-}
-.markdown-source-view.mod-cm6 .HyperMD-header-5 {
-  color: var(--ct-h5-color);
-  font-size: var(--ct-h5-size);
-}
-.markdown-source-view.mod-cm6 .HyperMD-header-6 {
-  color: var(--ct-h6-color);
-  font-size: var(--ct-h6-size);
-}
+.markdown-source-view.mod-cm6 .HyperMD-header-1 { color: var(--ct-h1-color); font-size: var(--ct-h1-size); }
+.markdown-source-view.mod-cm6 .HyperMD-header-2 { color: var(--ct-h2-color); font-size: var(--ct-h2-size); }
+.markdown-source-view.mod-cm6 .HyperMD-header-3 { color: var(--ct-h3-color); font-size: var(--ct-h3-size); }
+.markdown-source-view.mod-cm6 .HyperMD-header-4 { color: var(--ct-h4-color); font-size: var(--ct-h4-size); }
+.markdown-source-view.mod-cm6 .HyperMD-header-5 { color: var(--ct-h5-color); font-size: var(--ct-h5-size); }
+.markdown-source-view.mod-cm6 .HyperMD-header-6 { color: var(--ct-h6-color); font-size: var(--ct-h6-size); }
 
 /* Plugin UI */
-.ct-settings-section,
-.ct-modal-section {
+.ct-settings-section {
   margin-top: 1.6em;
   padding-bottom: 0.35em;
   border-bottom: 1px solid var(--background-modifier-border);
@@ -171,10 +134,43 @@ body:not([style*='--ct-note-icon: ""']) .nav-file-title-content::before {
 
 .ct-path-preview {
   padding: 8px 10px;
+  margin: 0.5em 0 1.1em;
   border-radius: 6px;
   background: var(--background-secondary);
   color: var(--text-muted);
   word-break: break-all;
+}
+
+.ct-launcher-modal .setting-item,
+.ct-item-modal .setting-item,
+.ct-graph-modal .setting-item {
+  border-top: none;
+}
+
+.ct-launcher-option {
+  border-radius: 8px;
+  padding: 12px 10px;
+  margin: 6px 0;
+  background: var(--background-secondary);
+}
+
+.ct-launcher-option .setting-item-control {
+  margin-left: 16px;
+}
+
+.ct-clean-setting,
+.ct-item-modal .ct-inline-controls {
+  padding-top: 10px;
+  padding-bottom: 10px;
+}
+
+.ct-modal-actions {
+  margin-top: 10px;
+}
+
+.ct-modal-actions .setting-item-control {
+  width: 100%;
+  justify-content: flex-end;
 }
 
 .ct-muted {
