@@ -4,9 +4,14 @@ const {
   Setting,
   Modal,
   FuzzySuggestModal,
+  Notice,
   TFile,
-  TFolder
+  TFolder,
+  normalizePath
 } = require("obsidian");
+
+const HUB_START_MARKER = "<!-- colori-folder-hub:start -->";
+const HUB_END_MARKER = "<!-- colori-folder-hub:end -->";
 
 const DEFAULT_SETTINGS = Object.freeze({
   folderColor: "#f0a45d",
@@ -190,6 +195,15 @@ module.exports = class ColoriPlugin extends Plugin {
             .setIcon("palette")
             .onClick(() => this.openOverrideEditor(file));
         });
+
+        if (file instanceof TFolder && file.path !== "/") {
+          menu.addItem((item) => {
+            item
+              .setTitle("Create/update graph hub")
+              .setIcon("git-fork")
+              .onClick(() => this.createOrUpdateFolderHub(file));
+          });
+        }
       })
     );
 
@@ -241,6 +255,15 @@ module.exports = class ColoriPlugin extends Plugin {
       `"${escapeCssString(this.settings.noteIcon)}"`
     );
 
+    // Use Obsidian's documented Graph CSS variables instead of touching the
+    // private Graph renderer. This keeps graph nodes aligned with Colori's
+    // global note and active-note colors.
+    root.style.setProperty("--graph-node", this.settings.noteColor);
+    root.style.setProperty(
+      "--graph-node-focused",
+      this.settings.activeNoteColor
+    );
+
     this.renderOverrideCss();
   }
 
@@ -253,6 +276,8 @@ module.exports = class ColoriPlugin extends Plugin {
     }
     root.style.removeProperty("--ct-folder-icon");
     root.style.removeProperty("--ct-note-icon");
+    root.style.removeProperty("--graph-node");
+    root.style.removeProperty("--graph-node-focused");
   }
 
   renderOverrideCss() {
@@ -347,6 +372,80 @@ module.exports = class ColoriPlugin extends Plugin {
   openOverrideEditor(file) {
     const type = file instanceof TFolder ? "folder" : "file";
     new OverrideEditorModal(this.app, this, type, file.path).open();
+  }
+
+  buildFolderHubSection(folder, hubPath) {
+    const notes = this.app.vault
+      .getMarkdownFiles()
+      .filter(
+        (file) => file.parent?.path === folder.path && file.path !== hubPath
+      )
+      .sort((a, b) => a.basename.localeCompare(b.basename));
+
+    const links = notes.map(
+      (file) => `- ${this.app.fileManager.generateMarkdownLink(file, hubPath)}`
+    );
+
+    return {
+      count: notes.length,
+      content: [
+        HUB_START_MARKER,
+        "## Notes",
+        links.length > 0 ? links.join("\n") : "_No notes in this folder yet._",
+        HUB_END_MARKER
+      ].join("\n")
+    };
+  }
+
+  async createOrUpdateFolderHub(folder) {
+    if (!(folder instanceof TFolder) || folder.path === "/") return;
+
+    const hubPath = normalizePath(`${folder.path}/${folder.name}.md`);
+    const existing = this.app.vault.getAbstractFileByPath(hubPath);
+
+    if (existing && !(existing instanceof TFile)) {
+      new Notice(`Cannot create graph hub at ${hubPath}.`);
+      return;
+    }
+
+    const section = this.buildFolderHubSection(folder, hubPath);
+
+    try {
+      if (!existing) {
+        await this.app.vault.create(
+          hubPath,
+          `# ${folder.name}\n\n${section.content}\n`
+        );
+      } else {
+        const current = await this.app.vault.read(existing);
+        const start = current.indexOf(HUB_START_MARKER);
+        const end =
+          start >= 0 ? current.indexOf(HUB_END_MARKER, start) : -1;
+
+        let updated;
+        if (start >= 0 && end >= start) {
+          updated =
+            current.slice(0, start) +
+            section.content +
+            current.slice(end + HUB_END_MARKER.length);
+        } else {
+          updated = `${current.trimEnd()}\n\n${section.content}\n`;
+        }
+
+        if (updated !== current) {
+          await this.app.vault.modify(existing, updated);
+        }
+      }
+
+      new Notice(
+        `${folder.name} graph hub updated with ${section.count} ${
+          section.count === 1 ? "note" : "notes"
+        }.`
+      );
+    } catch (error) {
+      console.error("Colori: unable to update folder graph hub", error);
+      new Notice(`Unable to update the ${folder.name} graph hub.`);
+    }
   }
 
   async handleRename(file, oldPath) {
@@ -485,6 +584,15 @@ class OverrideEditorModal extends Modal {
 
     actions.addButton((button) =>
       button
+        .setButtonText("Reset to default")
+        .onClick(async () => {
+          await this.plugin.removeOverride(this.type, this.path);
+          this.close();
+        })
+    );
+
+    actions.addButton((button) =>
+      button
         .setButtonText("Save")
         .setCta()
         .onClick(async () => {
@@ -492,18 +600,6 @@ class OverrideEditorModal extends Modal {
           this.close();
         })
     );
-
-    if (this.plugin.getOverride(this.type, this.path)) {
-      actions.addButton((button) =>
-        button
-          .setButtonText("Remove override")
-          .setWarning()
-          .onClick(async () => {
-            await this.plugin.removeOverride(this.type, this.path);
-            this.close();
-          })
-      );
-    }
   }
 
   onClose() {
@@ -547,6 +643,7 @@ class ColoriSettingTab extends PluginSettingTab {
   display() {
     const { containerEl } = this;
     containerEl.empty();
+    containerEl.addClass("ct-settings-tab");
 
     containerEl.createEl("h2", { text: "Colori" });
     containerEl.createEl("p", {
@@ -716,9 +813,8 @@ class ColoriSettingTab extends PluginSettingTab {
   }
 
   addColorAndSize(name, description, colorKey, sizeKey, min, max) {
-    new Setting(this.containerEl)
+    const colorSetting = new Setting(this.containerEl)
       .setName(`${name} color`)
-      .setDesc(description)
       .addColorPicker((picker) => {
         picker
           .setValue(this.plugin.settings[colorKey])
@@ -730,10 +826,18 @@ class ColoriSettingTab extends PluginSettingTab {
             await this.plugin.saveSettings();
           });
       });
+    colorSetting.settingEl.addClass("ct-compact-setting");
+    colorSetting.nameEl.setAttr("title", description);
 
     const sizeSetting = new Setting(this.containerEl)
-      .setName(`${name} font size`)
-      .setDesc(`${this.plugin.settings[sizeKey]} px`);
+      .setName(`${name} font size`);
+    sizeSetting.settingEl.addClass("ct-compact-setting");
+    sizeSetting.nameEl.setAttr("title", description);
+
+    const sizeValue = sizeSetting.controlEl.createSpan({
+      text: `${this.plugin.settings[sizeKey]} px`,
+      cls: "ct-size-value"
+    });
 
     sizeSetting.addSlider((slider) => {
       slider
@@ -747,16 +851,15 @@ class ColoriSettingTab extends PluginSettingTab {
             max,
             DEFAULT_SETTINGS[sizeKey]
           );
-          sizeSetting.setDesc(`${this.plugin.settings[sizeKey]} px`);
+          sizeValue.setText(`${this.plugin.settings[sizeKey]} px`);
           await this.plugin.saveSettings();
         });
     });
   }
 
   addIcon(name, description, key) {
-    new Setting(this.containerEl)
+    const iconSetting = new Setting(this.containerEl)
       .setName(name)
-      .setDesc(description)
       .addText((text) =>
         text
           .setPlaceholder("e.g. 📁")
@@ -768,5 +871,7 @@ class ColoriSettingTab extends PluginSettingTab {
             await this.plugin.saveSettings();
           })
       );
+    iconSetting.settingEl.addClass("ct-compact-setting");
+    iconSetting.nameEl.setAttr("title", description);
   }
 }

@@ -14,6 +14,9 @@ It provides controls for **color, font size, and optional icons**. Global styles
 - Set default icons globally
 - Apply per-folder and per-note overrides
 - Right-click a note or folder and choose **Customize title**
+- Reset an individual title so it inherits the global defaults again
+- Create or update a folder hub note from the folder's File Explorer menu
+- Show the global note and active-note colors in Graph view
 - Search for notes and folders from plugin settings
 - Automatically follow renamed files and folders
 - Automatically remove stale overrides when files or folders are deleted
@@ -29,7 +32,7 @@ Colori is designed to be local-first and minimal.
 - No account or cloud service required
 - No shell commands
 - No Node.js filesystem access
-- No modification of Markdown note contents
+- No modification of Markdown note contents unless you explicitly choose **Create/update graph hub**
 - Settings are stored locally using Obsidian's built-in plugin data API
 - User-controlled values are validated before being used for generated styles
 
@@ -87,6 +90,23 @@ You can then assign:
 
 Open **Settings -> Colori -> Individual overrides** and choose a folder or note.
 
+Use **Reset to default** in the Customize title window to remove that item's
+override. The item will immediately inherit the current global Colori style.
+
+## Folder graph hubs
+
+Right-click a folder in the File Explorer and select **Create/update graph hub**.
+Colori creates a Markdown note with the same name inside that folder and adds
+links to every Markdown note directly inside it. Obsidian then displays the hub
+and its real connections in Graph view.
+
+Running the action again refreshes only the section between Colori's hub
+markers. Any content you write outside that managed section is preserved.
+
+Colori uses Obsidian's documented Graph CSS variables to match resolved nodes
+to the global note color and the focused node to the active-note color. It does
+not hook into Graph view's private renderer or add Graph view context-menu actions.
+
 ## Icons
 
 Icons use emoji or Unicode symbols, so Colori has no external icon-library dependency.
@@ -99,7 +119,9 @@ Examples:
 
 Colori uses Obsidian's plugin API for settings, vault item selection, and context-menu integration. Global appearance values are exposed as CSS variables. Per-item overrides generate narrowly scoped CSS rules that target the selected file or folder path.
 
-The plugin does not rewrite note files. Appearance preferences are stored separately as plugin settings.
+Appearance preferences are stored separately as plugin settings. Colori writes
+to a note only when you explicitly create or refresh a folder graph hub, and it
+limits later refreshes to the marked hub section.
 
 ## License
 
