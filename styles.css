@@ -164,6 +164,22 @@ body:not([style*='--ct-note-icon: ""']) .nav-file-title-content::before {
   padding-bottom: 10px;
 }
 
+.ct-back-row {
+  justify-content: flex-start;
+  min-height: 0;
+  padding: 0 0 6px 0;
+}
+
+.ct-back-row .setting-item-info {
+  display: none;
+}
+
+.ct-back-row .setting-item-control {
+  width: auto;
+  margin-left: 0;
+  justify-content: flex-start;
+}
+
 .ct-modal-actions {
   margin-top: 10px;
 }
