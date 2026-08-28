@@ -38,6 +38,7 @@ const DEFAULT_SETTINGS = Object.freeze({
   h5Size: 17,
   h6Color: "#ef8fde",
   h6Size: 16,
+  graphMatchNoteColors: false,
   overrides: [],
   folderHubs: [],
   connections: []
@@ -128,6 +129,25 @@ function pathMatchesOrDescends(path, basePath) {
   return path === basePath || path.startsWith(`${basePath}/`);
 }
 
+function defangUrlText(value) {
+  if (typeof value !== "string" || !value) return value;
+
+  return value.replace(/\bhttps?:\/\/[^\s<>"'`]+/gi, (url) => {
+    const match = url.match(/^(https?):\/\/([^/?#]+)(.*)$/i);
+    if (!match) return url;
+
+    const protocol = match[1].toLowerCase() === "https" ? "hxxps" : "hxxp";
+    const host = match[2].replace(/\./g, "[.]");
+    return `${protocol}://${host}${match[3]}`;
+  });
+}
+
+function hexToGraphColor(value) {
+  const safe = sanitizeColor(value, null);
+  if (!safe) return null;
+  return { a: 1, rgb: Number.parseInt(safe.slice(1), 16) };
+}
+
 function normalizeOverride(raw, settings) {
   if (!raw || (raw.type !== "folder" && raw.type !== "file")) return null;
   const path = sanitizePath(raw.path);
@@ -168,6 +188,7 @@ function normalizeSettings(raw) {
 
   result.folderIcon = sanitizeIcon(source.folderIcon);
   result.noteIcon = sanitizeIcon(source.noteIcon);
+  result.graphMatchNoteColors = source.graphMatchNoteColors === true;
 
   if (Array.isArray(source.overrides)) {
     const seen = new Set();
@@ -238,6 +259,8 @@ module.exports = class ColoriPlugin extends Plugin {
   async onload() {
     await this.loadSettings();
 
+    this.graphOriginalColors = new WeakMap();
+
     this.overrideStyleEl = document.createElement("style");
     this.overrideStyleEl.id = "colori-overrides";
     document.head.appendChild(this.overrideStyleEl);
@@ -260,12 +283,40 @@ module.exports = class ColoriPlugin extends Plugin {
       })
     );
 
+    this.addCommand({
+      id: "defang-urls",
+      name: "Defang URLs",
+      editorCallback: (editor) => this.defangEditorUrls(editor)
+    });
+
+    this.registerEvent(
+      this.app.workspace.on("editor-menu", (menu, editor) => {
+        menu.addItem((item) => {
+          item
+            .setTitle("Defang URLs")
+            .setIcon("unlink")
+            .onClick(() => this.defangEditorUrls(editor));
+        });
+      })
+    );
+
+    this.registerEvent(
+      this.app.workspace.on("layout-change", () => this.applyGraphNodeColors())
+    );
+
+    this.registerInterval(
+      window.setInterval(() => {
+        if (this.settings.graphMatchNoteColors) this.applyGraphNodeColors();
+      }, 500)
+    );
+
     this.registerEvent(this.app.vault.on("create", async (file) => this.handleCreate(file)));
     this.registerEvent(this.app.vault.on("rename", async (file, oldPath) => this.handleRename(file, oldPath)));
     this.registerEvent(this.app.vault.on("delete", async (file) => this.handleDelete(file)));
   }
 
   onunload() {
+    this.restoreGraphNodeColors();
     this.clearSettings();
   }
 
@@ -277,6 +328,12 @@ module.exports = class ColoriPlugin extends Plugin {
     this.settings = normalizeSettings(this.settings);
     await this.saveData(this.settings);
     this.applySettings();
+
+    if (this.settings.graphMatchNoteColors) {
+      this.applyGraphNodeColors();
+    } else {
+      this.restoreGraphNodeColors();
+    }
   }
 
   applySettings() {
@@ -303,6 +360,112 @@ module.exports = class ColoriPlugin extends Plugin {
     root.style.removeProperty("--ct-note-icon");
     root.style.removeProperty("--graph-node");
     root.style.removeProperty("--graph-node-focused");
+  }
+
+  defangEditorUrls(editor) {
+    if (!editor || typeof editor.getValue !== "function") return;
+
+    const selection = typeof editor.getSelection === "function" ? editor.getSelection() : "";
+    if (selection) {
+      const updated = defangUrlText(selection);
+      if (updated === selection) {
+        new Notice("No clickable HTTP or HTTPS URLs found in the selection.");
+        return;
+      }
+      editor.replaceSelection(updated);
+      new Notice("Selected URLs defanged.");
+      return;
+    }
+
+    const currentText = editor.getValue();
+    const updated = defangUrlText(currentText);
+    if (updated === currentText) {
+      new Notice("No clickable HTTP or HTTPS URLs found in this note.");
+      return;
+    }
+
+    if (typeof editor.setValue === "function") {
+      editor.setValue(updated);
+      new Notice("URLs in this note defanged.");
+    }
+  }
+
+  getGraphRenderers() {
+    const renderers = [];
+    for (const type of ["graph", "localgraph"]) {
+      for (const leaf of this.app.workspace.getLeavesOfType(type)) {
+        const renderer = leaf?.view?.renderer;
+        if (renderer?.nodes) renderers.push(renderer);
+      }
+    }
+    return renderers;
+  }
+
+  getGraphNodePath(node) {
+    if (!node || typeof node.id !== "string") return null;
+    const raw = sanitizePath(node.id);
+    if (!raw) return null;
+
+    const direct = this.app.vault.getAbstractFileByPath(raw);
+    if (direct instanceof TFile && direct.extension === "md") return direct.path;
+
+    if (!raw.toLowerCase().endsWith(".md")) {
+      const withExtension = this.app.vault.getAbstractFileByPath(`${raw}.md`);
+      if (withExtension instanceof TFile && withExtension.extension === "md") {
+        return withExtension.path;
+      }
+    }
+
+    return null;
+  }
+
+  applyGraphNodeColors() {
+    if (!this.settings.graphMatchNoteColors) return;
+
+    try {
+      for (const renderer of this.getGraphRenderers()) {
+        const nodes = Array.isArray(renderer.nodes)
+          ? renderer.nodes
+          : Object.values(renderer.nodes || {});
+
+        for (const node of nodes) {
+          const path = this.getGraphNodePath(node);
+          if (!path) continue;
+
+          const override = this.getOverride("file", path);
+          if (!override) continue;
+
+          const graphColor = hexToGraphColor(override.color);
+          if (!graphColor) continue;
+
+          if (!this.graphOriginalColors.has(node)) {
+            this.graphOriginalColors.set(node, node.color);
+          }
+
+          node.color = graphColor;
+        }
+      }
+    } catch (error) {
+      console.error("Colori: unable to apply experimental graph node colors", error);
+    }
+  }
+
+  restoreGraphNodeColors() {
+    try {
+      for (const renderer of this.getGraphRenderers()) {
+        const nodes = Array.isArray(renderer.nodes)
+          ? renderer.nodes
+          : Object.values(renderer.nodes || {});
+
+        for (const node of nodes) {
+          if (!this.graphOriginalColors.has(node)) continue;
+          node.color = this.graphOriginalColors.get(node);
+          this.graphOriginalColors.delete(node);
+        }
+      }
+    } catch (error) {
+      console.error("Colori: unable to restore graph node colors", error);
+    }
   }
 
   renderOverrideCss() {
@@ -1062,7 +1225,7 @@ class ColoriSettingTab extends PluginSettingTab {
     containerEl.empty();
     containerEl.addClass("ct-settings-tab");
 
-    containerEl.createEl("h2", { text: "Colori Dev" });
+    containerEl.createEl("h2", { text: "Colori" });
     containerEl.createEl("p", {
       text: "Global styles apply everywhere. Individual overrides take priority. Right-click a note or folder and choose Colori for item-specific controls."
     });
@@ -1125,6 +1288,22 @@ class ColoriSettingTab extends PluginSettingTab {
           );
       }
     }
+
+    this.addSection("Tools");
+    new Setting(containerEl)
+      .setName("Defang URLs")
+      .setDesc("Use the command palette or editor context menu to turn HTTP/HTTPS URLs into non-clickable hxxp/hxxps and [.] notation.");
+
+    this.addSection("Graph");
+    new Setting(containerEl)
+      .setName("Match graph nodes to note colors")
+      .setDesc("Experimental: apply individual Colori note override colors to matching nodes in Obsidian Graph view. Uses undocumented Graph renderer internals and may break after Obsidian updates.")
+      .addToggle((toggle) =>
+        toggle.setValue(this.plugin.settings.graphMatchNoteColors).onChange(async (value) => {
+          this.plugin.settings.graphMatchNoteColors = value === true;
+          await this.plugin.saveSettings();
+        })
+      );
 
     this.addSection("Note title");
     this.addColorAndSize("Inline title", "Inline note title color and font size.", "inlineTitleColor", "inlineTitleSize", 12, 60);
