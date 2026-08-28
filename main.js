@@ -401,6 +401,21 @@ module.exports = class ColoriPlugin extends Plugin {
     return renderers;
   }
 
+  getGraphNodes(renderer) {
+    const nodes = renderer?.nodes;
+    if (!nodes) return [];
+    if (Array.isArray(nodes)) return nodes;
+    if (nodes instanceof Map) return Array.from(nodes.values());
+    if (typeof nodes.values === "function") {
+      try {
+        return Array.from(nodes.values());
+      } catch (_) {
+        // Fall back to enumerable object values.
+      }
+    }
+    return Object.values(nodes);
+  }
+
   getGraphNodePath(node) {
     if (!node || typeof node.id !== "string") return null;
     const raw = sanitizePath(node.id);
@@ -424,11 +439,7 @@ module.exports = class ColoriPlugin extends Plugin {
 
     try {
       for (const renderer of this.getGraphRenderers()) {
-        const nodes = Array.isArray(renderer.nodes)
-          ? renderer.nodes
-          : Object.values(renderer.nodes || {});
-
-        for (const node of nodes) {
+        for (const node of this.getGraphNodes(renderer)) {
           const path = this.getGraphNodePath(node);
           if (!path) continue;
 
@@ -453,11 +464,7 @@ module.exports = class ColoriPlugin extends Plugin {
   restoreGraphNodeColors() {
     try {
       for (const renderer of this.getGraphRenderers()) {
-        const nodes = Array.isArray(renderer.nodes)
-          ? renderer.nodes
-          : Object.values(renderer.nodes || {});
-
-        for (const node of nodes) {
+        for (const node of this.getGraphNodes(renderer)) {
           if (!this.graphOriginalColors.has(node)) continue;
           node.color = this.graphOriginalColors.get(node);
           this.graphOriginalColors.delete(node);
