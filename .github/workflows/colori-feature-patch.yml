@@ -1,0 +1,66 @@
+name: Colori feature patch
+
+on:
+  push:
+    branches: [dev]
+    paths:
+      - .github/workflows/colori-feature-patch.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: dev
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Patch main.js
+        shell: python
+        run: |
+          from pathlib import Path
+
+          p = Path('main.js')
+          s = p.read_text(encoding='utf-8')
+
+          def replace_once(old, new):
+              global s
+              if old not in s:
+                  raise SystemExit(f'Expected block not found:\n{old[:200]}')
+              s = s.replace(old, new, 1)
+
+          replace_once('''  h6Color: "#ef8fde",\n  h6Size: 16,\n  overrides: [],''', '''  h6Color: "#ef8fde",\n  h6Size: 16,\n  graphMatchNoteColors: false,\n  overrides: [],''')
+
+          replace_once('''function normalizeOverride(raw, settings) {''', '''function defangUrlText(value) {\n  if (typeof value !== "string" || !value) return value;\n\n  return value.replace(/\\bhttps?:\\/\\/[^\\s<>"'`]+/gi, (url) => {\n    const match = url.match(/^(https?):\\/\\/([^/?#]+)(.*)$/i);\n    if (!match) return url;\n\n    const protocol = match[1].toLowerCase() === "https" ? "hxxps" : "hxxp";\n    const host = match[2].replace(/\\./g, "[.]");\n    return `${protocol}://${host}${match[3]}`;\n  });\n}\n\nfunction hexToGraphColor(value) {\n  const safe = sanitizeColor(value, null);\n  if (!safe) return null;\n  return { a: 1, rgb: Number.parseInt(safe.slice(1), 16) };\n}\n\nfunction normalizeOverride(raw, settings) {''')
+
+          replace_once('''  result.folderIcon = sanitizeIcon(source.folderIcon);\n  result.noteIcon = sanitizeIcon(source.noteIcon);\n''', '''  result.folderIcon = sanitizeIcon(source.folderIcon);\n  result.noteIcon = sanitizeIcon(source.noteIcon);\n  result.graphMatchNoteColors = source.graphMatchNoteColors === true;\n''')
+
+          replace_once('''  async onload() {\n    await this.loadSettings();\n\n    this.overrideStyleEl = document.createElement("style");''', '''  async onload() {\n    await this.loadSettings();\n\n    this.graphOriginalColors = new WeakMap();\n\n    this.overrideStyleEl = document.createElement("style");''')
+
+          replace_once('''    this.registerEvent(this.app.vault.on("create", async (file) => this.handleCreate(file)));\n    this.registerEvent(this.app.vault.on("rename", async (file, oldPath) => this.handleRename(file, oldPath)));\n    this.registerEvent(this.app.vault.on("delete", async (file) => this.handleDelete(file)));\n''', '''    this.addCommand({\n      id: "defang-urls",\n      name: "Defang URLs",\n      editorCallback: (editor) => this.defangEditorUrls(editor)\n    });\n\n    this.registerEvent(\n      this.app.workspace.on("editor-menu", (menu, editor) => {\n        menu.addItem((item) => {\n          item\n            .setTitle("Defang URLs")\n            .setIcon("unlink")\n            .onClick(() => this.defangEditorUrls(editor));\n        });\n      })\n    );\n\n    this.registerEvent(\n      this.app.workspace.on("layout-change", () => this.applyGraphNodeColors())\n    );\n\n    this.registerInterval(\n      window.setInterval(() => {\n        if (this.settings.graphMatchNoteColors) this.applyGraphNodeColors();\n      }, 500)\n    );\n\n    this.registerEvent(this.app.vault.on("create", async (file) => this.handleCreate(file)));\n    this.registerEvent(this.app.vault.on("rename", async (file, oldPath) => this.handleRename(file, oldPath)));\n    this.registerEvent(this.app.vault.on("delete", async (file) => this.handleDelete(file)));\n''')
+
+          replace_once('''  onunload() {\n    this.clearSettings();\n  }\n''', '''  onunload() {\n    this.restoreGraphNodeColors();\n    this.clearSettings();\n  }\n''')
+
+          replace_once('''  async saveSettings() {\n    this.settings = normalizeSettings(this.settings);\n    await this.saveData(this.settings);\n    this.applySettings();\n  }\n''', '''  async saveSettings() {\n    this.settings = normalizeSettings(this.settings);\n    await this.saveData(this.settings);\n    this.applySettings();\n\n    if (this.settings.graphMatchNoteColors) {\n      this.applyGraphNodeColors();\n    } else {\n      this.restoreGraphNodeColors();\n    }\n  }\n''')
+
+          replace_once('''  renderOverrideCss() {''', '''  defangEditorUrls(editor) {\n    if (!editor || typeof editor.getValue !== "function") return;\n\n    const selection = typeof editor.getSelection === "function" ? editor.getSelection() : "";\n    if (selection) {\n      const updated = defangUrlText(selection);\n      if (updated === selection) {\n        new Notice("No clickable HTTP or HTTPS URLs found in the selection.");\n        return;\n      }\n      editor.replaceSelection(updated);\n      new Notice("Selected URLs defanged.");\n      return;\n    }\n\n    const currentText = editor.getValue();\n    const updated = defangUrlText(currentText);\n    if (updated === currentText) {\n      new Notice("No clickable HTTP or HTTPS URLs found in this note.");\n      return;\n    }\n\n    if (typeof editor.setValue === "function") {\n      editor.setValue(updated);\n      new Notice("URLs in this note defanged.");\n    }\n  }\n\n  getGraphRenderers() {\n    const renderers = [];\n    for (const type of ["graph", "localgraph"]) {\n      for (const leaf of this.app.workspace.getLeavesOfType(type)) {\n        const renderer = leaf?.view?.renderer;\n        if (renderer?.nodes) renderers.push(renderer);\n      }\n    }\n    return renderers;\n  }\n\n  getGraphNodePath(node) {\n    if (!node || typeof node.id !== "string") return null;\n    const raw = sanitizePath(node.id);\n    if (!raw) return null;\n\n    const direct = this.app.vault.getAbstractFileByPath(raw);\n    if (direct instanceof TFile && direct.extension === "md") return direct.path;\n\n    if (!raw.toLowerCase().endsWith(".md")) {\n      const withExtension = this.app.vault.getAbstractFileByPath(`${raw}.md`);\n      if (withExtension instanceof TFile && withExtension.extension === "md") {\n        return withExtension.path;\n      }\n    }\n\n    return null;\n  }\n\n  applyGraphNodeColors() {\n    if (!this.settings.graphMatchNoteColors) return;\n\n    try {\n      for (const renderer of this.getGraphRenderers()) {\n        const nodes = Array.isArray(renderer.nodes)\n          ? renderer.nodes\n          : Object.values(renderer.nodes || {});\n\n        for (const node of nodes) {\n          const path = this.getGraphNodePath(node);\n          if (!path) continue;\n\n          const override = this.getOverride("file", path);\n          if (!override) continue;\n\n          const graphColor = hexToGraphColor(override.color);\n          if (!graphColor) continue;\n\n          if (!this.graphOriginalColors.has(node)) {\n            this.graphOriginalColors.set(node, node.color);\n          }\n\n          node.color = graphColor;\n        }\n      }\n    } catch (error) {\n      console.error("Colori: unable to apply experimental graph node colors", error);\n    }\n  }\n\n  restoreGraphNodeColors() {\n    try {\n      for (const renderer of this.getGraphRenderers()) {\n        const nodes = Array.isArray(renderer.nodes)\n          ? renderer.nodes\n          : Object.values(renderer.nodes || {});\n\n        for (const node of nodes) {\n          if (!this.graphOriginalColors.has(node)) continue;\n          node.color = this.graphOriginalColors.get(node);\n          this.graphOriginalColors.delete(node);\n        }\n      }\n    } catch (error) {\n      console.error("Colori: unable to restore graph node colors", error);\n    }\n  }\n\n  renderOverrideCss() {''')
+
+          replace_once('''    containerEl.createEl("h2", { text: "Colori Dev" });''', '''    containerEl.createEl("h2", { text: "Colori" });''')
+
+          replace_once('''    this.addSection("Note title");\n    this.addColorAndSize("Inline title", "Inline note title color and font size.", "inlineTitleColor", "inlineTitleSize", 12, 60);\n\n    this.addSection("Markdown headings");\n''', '''    this.addSection("Tools");\n    new Setting(containerEl)\n      .setName("Defang URLs")\n      .setDesc("Use the command palette or editor context menu to turn HTTP/HTTPS URLs into non-clickable hxxp/hxxps and [.] notation.");\n\n    this.addSection("Graph");\n    new Setting(containerEl)\n      .setName("Match graph nodes to note colors")\n      .setDesc("Experimental: apply individual Colori note override colors to matching nodes in Obsidian Graph view. Uses undocumented Graph renderer internals and may break after Obsidian updates.")\n      .addToggle((toggle) =>\n        toggle.setValue(this.plugin.settings.graphMatchNoteColors).onChange(async (value) => {\n          this.plugin.settings.graphMatchNoteColors = value === true;\n          await this.plugin.saveSettings();\n        })\n      );\n\n    this.addSection("Note title");\n    this.addColorAndSize("Inline title", "Inline note title color and font size.", "inlineTitleColor", "inlineTitleSize", 12, 60);\n\n    this.addSection("Markdown headings");\n''')
+
+          p.write_text(s, encoding='utf-8')
+      - name: Syntax check
+        run: node --check main.js
+      - name: Commit feature changes
+        run: |
+          git config user.name "H4d33r"
+          git config user.email "79756288+h4d33r@users.noreply.github.com"
+          git add main.js
+          git commit -m "feat: add URL defanging and per-note graph colors"
+          git push origin dev
