@@ -130,22 +130,67 @@ function pathMatchesOrDescends(path, basePath) {
   return path === basePath || path.startsWith(`${basePath}/`);
 }
 
+function isWebDestination(value) {
+  if (typeof value !== "string") return false;
+  const text = value.trim().replace(/^<|>$/g, "");
+  return /^(?:https?:\/\/)?(?:www\.)?(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}(?::\d{1,5})?(?:[\/?#].*)?$/i.test(text);
+}
+
+function defangDestination(value) {
+  if (typeof value !== "string" || !value) return value;
+  let text = value.trim().replace(/^<|>$/g, "");
+  text = text.replace(/^https:\/\//i, "hxxps://").replace(/^http:\/\//i, "hxxp://");
+  const schemeMatch = text.match(/^(hxxps?:\/\/)([^\/?#]+)(.*)$/i);
+  if (schemeMatch) {
+    return `${schemeMatch[1]}${schemeMatch[2].replace(/\./g, "[.]")}${schemeMatch[3]}`;
+  }
+  const hostMatch = text.match(/^([^\/?#]+)(.*)$/);
+  return hostMatch ? `${hostMatch[1].replace(/\./g, "[.]")}${hostMatch[2]}` : text;
+}
+
+function refangDestination(value) {
+  if (typeof value !== "string" || !value) return value;
+  return value
+    .replace(/^hxxps:\/\//i, "https://")
+    .replace(/^hxxp:\/\//i, "http://")
+    .replace(/\[\.\]/g, ".");
+}
+
 function defangUrlText(value) {
   if (typeof value !== "string" || !value) return value;
-  return value.replace(/\bhttps?:\/\/[^\s<>"'`]+/gi, (url) => {
-    const match = url.match(/^(https?):\/\/([^/?#]+)(.*)$/i);
-    if (!match) return url;
-    const protocol = match[1].toLowerCase() === "https" ? "hxxps" : "hxxp";
-    return `${protocol}://${match[2].replace(/\./g, "[.]")}${match[3]}`;
+  let output = value;
+
+  // Markdown inline links: remove the clickable wrapper completely.
+  output = output.replace(/\[([^\]]+)\]\(([^)\s]+)(?:\s+["'][^"']*["'])?\)/g, (full, label, destination) => {
+    if (!isWebDestination(destination)) return full;
+    return `${label} — ${defangDestination(destination)}`;
   });
+
+  // Markdown autolinks such as <https://example.com>.
+  output = output.replace(/<((?:https?:\/\/)?(?:www\.)?(?:[a-z0-9-]+\.)+[a-z]{2,63}[^>]*)>/gi, (full, destination) => {
+    if (!isWebDestination(destination)) return full;
+    return defangDestination(destination);
+  });
+
+  // Raw HTTP(S) URLs.
+  output = output.replace(/\bhttps?:\/\/[^\s<>"'`\])]+/gi, (url) => defangDestination(url));
+
+  // Bare domains that have not already been defanged.
+  output = output.replace(/\b(?:www\.)?(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}(?::\d{1,5})?(?:[\/?#][^\s<>"'`]*)?/gi, (domain, offset, whole) => {
+    const before = whole.slice(Math.max(0, offset - 8), offset).toLowerCase();
+    if (before.endsWith("hxxps://") || before.endsWith("hxxp://")) return domain;
+    if (domain.includes("[.]")) return domain;
+    return defangDestination(domain);
+  });
+
+  return output;
 }
 
 function refangUrlText(value) {
   if (typeof value !== "string" || !value) return value;
-  return value.replace(/\bhxxps?:\/\/[^\s<>"'`]+/gi, (url) => {
-    const protocol = url.toLowerCase().startsWith("hxxps://") ? "https://" : "http://";
-    return protocol + url.slice(url.indexOf("://") + 3).replace(/\[\.\]/g, ".");
-  });
+  return value
+    .replace(/\bhxxps?:\/\/[^\s<>"'`]+/gi, (url) => refangDestination(url))
+    .replace(/\b(?:www\.)?(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\[\.\])+[a-z]{2,63}(?::\d{1,5})?(?:[\/?#][^\s<>"'`]*)?/gi, (domain) => refangDestination(domain));
 }
 
 function normalizeOverride(raw, settings) {
@@ -292,6 +337,11 @@ module.exports = class ColoriPlugin extends Plugin {
     this.registerEvent(this.app.workspace.on("file-open", rememberMarkdown));
     this.registerEvent(this.app.workspace.on("active-leaf-change", rememberMarkdown));
 
+    const blockSafeLink = (event) => this.blockSafeLinkEvent(event);
+    for (const eventName of ["pointerdown", "mousedown", "click", "auxclick"]) {
+      this.registerDomEvent(document, eventName, blockSafeLink, true);
+    }
+
     this.registerEvent(this.app.workspace.on("layout-change", () => this.applyGraphNodeColors()));
     this.registerInterval(window.setInterval(() => {
       if (this.settings.graphMatchNoteColors) this.applyGraphNodeColors();
@@ -386,6 +436,52 @@ module.exports = class ColoriPlugin extends Plugin {
     await this.saveSettings();
   }
 
+  getWebDestinationFromEvent(event) {
+    const target = event.target instanceof Element ? event.target : null;
+    if (!target) return null;
+
+    const anchor = target.closest("a[href]");
+    if (anchor) {
+      const href = anchor.getAttribute("href") || "";
+      if (isWebDestination(href)) return href;
+      try {
+        const url = new URL(anchor.href);
+        if (url.protocol === "http:" || url.protocol === "https:") return anchor.href;
+      } catch (_) {}
+    }
+
+    const urlToken = target.closest(".cm-url, .cm-link, .external-link");
+    if (urlToken) {
+      const text = (urlToken.textContent || "").trim().replace(/^\(|\)$/g, "");
+      if (isWebDestination(text)) return text;
+
+      const line = urlToken.closest(".cm-line");
+      if (line) {
+        const lineText = line.textContent || "";
+        const candidates = lineText.match(/(?:https?:\/\/)?(?:www\.)?(?:[a-z0-9-]+\.)+[a-z]{2,63}(?:[\/?#][^\s)]*)?/gi) || [];
+        const candidate = candidates.find((item) => isWebDestination(item));
+        if (candidate) return candidate;
+      }
+    }
+
+    return null;
+  }
+
+  blockSafeLinkEvent(event) {
+    if (!this.settings.safeLinksEnabled || event.ctrlKey || event.metaKey) return;
+    const destination = this.getWebDestinationFromEvent(event);
+    if (!destination) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+    if (typeof event.stopImmediatePropagation === "function") event.stopImmediatePropagation();
+
+    if (event.type === "click" && !this.blockNoticeShown) {
+      this.blockNoticeShown = true;
+      new Notice("External web link blocked. Hold Ctrl/Cmd while clicking to open it.");
+    }
+  }
+
   getTrackedFile() {
     const active = this.app.workspace.getActiveViewOfType(MarkdownView)?.file;
     if (active instanceof TFile) {
@@ -425,11 +521,31 @@ module.exports = class ColoriPlugin extends Plugin {
     const file = this.getTrackedFile();
     if (!file) return false;
     const transform = mode === "refang" ? refangUrlText : defangUrlText;
+    const editor = this.getEditorForFile(file);
+
+    if (editor) {
+      const selection = editor.getSelection();
+      if (selection) {
+        const updatedSelection = transform(selection);
+        if (updatedSelection === selection) return false;
+        editor.replaceSelection(updatedSelection);
+        new Notice(mode === "refang" ? "Selection refanged." : "Selection defanged.");
+        return true;
+      }
+
+      const current = editor.getValue();
+      const updated = transform(current);
+      if (updated === current) return false;
+      editor.setValue(updated);
+      new Notice(mode === "refang" ? "Note refanged." : "Note defanged.");
+      return true;
+    }
+
     const current = await this.app.vault.read(file);
     const updated = transform(current);
     if (updated === current) return false;
     await this.app.vault.modify(file, updated);
-    new Notice(mode === "refang" ? "URLs refanged." : "URLs defanged.");
+    new Notice(mode === "refang" ? "Note refanged." : "Note defanged.");
     return true;
   }
 
@@ -788,15 +904,17 @@ class NoteToolsView extends ItemView {
 
     const safeBody = this.makeDropdown(container, "safe", "Safe Links");
     safeBody.createEl("div", { text: this.plugin.settings.safeLinksEnabled ? "Protection is ON" : "Protection is OFF", cls: this.plugin.settings.safeLinksEnabled ? "ct-status ct-status-on" : "ct-status" });
-    safeBody.createEl("p", { text: "When enabled, external web links in Markdown notes are disabled. Change this in plugin settings.", cls: "ct-muted" });
+    safeBody.createEl("p", { text: "Normal clicks on web links are blocked, including Markdown links such as [Google](google.com). Hold Ctrl/Cmd while clicking to open intentionally.", cls: "ct-muted" });
 
     const defangBody = this.makeDropdown(container, "defang", "Defang / Refang");
     const transformActions = defangBody.createDiv({ cls: "ct-sidebar-actions" });
-    const defang = transformActions.createEl("button", { text: "Defang note" });
+    const defang = transformActions.createEl("button", { text: "Defang" });
+    defang.addEventListener("mousedown", (event) => event.preventDefault());
     defang.addEventListener("click", async () => { const changed = await this.plugin.transformTrackedNote("defang"); if (changed) { this.openSections.add("defang"); await this.render(); } });
-    const refang = transformActions.createEl("button", { text: "Refang note" });
+    const refang = transformActions.createEl("button", { text: "Refang" });
+    refang.addEventListener("mousedown", (event) => event.preventDefault());
     refang.addEventListener("click", async () => { const changed = await this.plugin.transformTrackedNote("refang"); if (changed) { this.openSections.add("defang"); await this.render(); } });
-    defangBody.createEl("p", { text: "Sidebar buttons process the whole tracked note. Use the Command Palette commands for selected text.", cls: "ct-muted" });
+    defangBody.createEl("p", { text: "If text is selected in the note, only the selection is processed. Otherwise the whole note is processed.", cls: "ct-muted" });
 
     const iocBody = this.makeDropdown(container, "ioc", "IOC Scanner");
     const typeBox = iocBody.createDiv({ cls: "ct-ioc-type-grid" });
