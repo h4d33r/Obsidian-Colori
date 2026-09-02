@@ -171,3 +171,55 @@ body:not([style*='--ct-note-icon: ""']) .nav-file-title-content::before { margin
 }
 .ct-note-info-label { color: var(--text-muted); }
 .ct-note-info-value { text-align: right; overflow-wrap: anywhere; }
+
+
+body.ct-safe-links .workspace-leaf-content[data-type="markdown"] a[href^="http://"],
+body.ct-safe-links .workspace-leaf-content[data-type="markdown"] a[href^="https://"],
+body.ct-safe-links .workspace-leaf-content[data-type="markdown"] .external-link,
+body.ct-safe-links .workspace-leaf-content[data-type="markdown"] .cm-url {
+  pointer-events: none !important;
+  cursor: not-allowed !important;
+}
+
+.ct-tools-dropdown {
+  margin-top: 10px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  background: var(--background-secondary);
+}
+
+.ct-tools-dropdown > summary {
+  padding: 10px 12px;
+  cursor: pointer;
+  user-select: none;
+  font-weight: 600;
+}
+
+.ct-tools-dropdown-body { padding: 4px 12px 12px; }
+
+.ct-ioc-summary {
+  margin: 10px 0 4px;
+  padding: 9px 10px;
+  border-radius: 7px;
+  background: var(--background-secondary-alt);
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.ct-ioc-summary span {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  line-height: 1.45;
+}
+
+.ct-ioc-type-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px 10px;
+  margin: 6px 0 10px;
+}
+
+.ct-ioc-check { display: flex; align-items: center; gap: 6px; }
+.ct-ioc-limit-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 8px 0; }
+.ct-ioc-group-title { margin: 12px 0 5px; font-size: var(--font-ui-small); font-weight: 700; color: var(--text-muted); }

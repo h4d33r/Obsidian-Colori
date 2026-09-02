@@ -284,16 +284,13 @@ module.exports = class ColoriPlugin extends Plugin {
 
     const rememberMarkdown = () => {
       const view = this.app.workspace.getActiveViewOfType(MarkdownView);
-      if (view?.file instanceof TFile) this.lastMarkdownPath = view.file.path;
-      this.refreshSidebar();
+      if (!(view?.file instanceof TFile)) return;
+      const changed = this.lastMarkdownPath !== view.file.path;
+      this.lastMarkdownPath = view.file.path;
+      if (changed) this.refreshSidebar();
     };
     this.registerEvent(this.app.workspace.on("file-open", rememberMarkdown));
     this.registerEvent(this.app.workspace.on("active-leaf-change", rememberMarkdown));
-
-    const block = (event) => this.blockExternalLinkEvent(event);
-    for (const eventName of ["pointerdown", "mousedown", "click", "auxclick"]) {
-      this.registerDomEvent(document, eventName, block, true);
-    }
 
     this.registerEvent(this.app.workspace.on("layout-change", () => this.applyGraphNodeColors()));
     this.registerInterval(window.setInterval(() => {
@@ -333,6 +330,7 @@ module.exports = class ColoriPlugin extends Plugin {
     root.style.setProperty("--ct-note-icon", `"${escapeCssString(this.settings.noteIcon)}"`);
     root.style.setProperty("--graph-node", this.settings.noteColor);
     root.style.setProperty("--graph-node-focused", this.settings.activeNoteColor);
+    root.classList.toggle("ct-safe-links", this.settings.safeLinksEnabled);
     this.renderOverrideCss();
   }
 
@@ -343,6 +341,7 @@ module.exports = class ColoriPlugin extends Plugin {
     for (const name of ["--ct-folder-icon", "--ct-note-icon", "--graph-node", "--graph-node-focused"]) {
       root.style.removeProperty(name);
     }
+    root.classList.remove("ct-safe-links");
   }
 
   renderOverrideCss() {
@@ -387,27 +386,6 @@ module.exports = class ColoriPlugin extends Plugin {
     await this.saveSettings();
   }
 
-  blockExternalLinkEvent(event) {
-    if (!this.settings.safeLinksEnabled || event.ctrlKey || event.metaKey) return;
-    const target = event.target instanceof Element ? event.target : null;
-    if (!target) return;
-
-    const anchor = target.closest("a[href]");
-    const href = anchor?.getAttribute("href") || "";
-    const liveUrl = target.closest(".cm-url, .external-link");
-    const liveText = liveUrl?.textContent?.trim() || "";
-    if (!/^https?:\/\//i.test(href) && !/^https?:\/\//i.test(liveText)) return;
-
-    event.preventDefault();
-    event.stopPropagation();
-    if (typeof event.stopImmediatePropagation === "function") event.stopImmediatePropagation();
-
-    if (event.type === "click" && !this.blockNoticeShown) {
-      this.blockNoticeShown = true;
-      new Notice("External link blocked. Hold Ctrl/Cmd while clicking to open it.");
-    }
-  }
-
   getTrackedFile() {
     const active = this.app.workspace.getActiveViewOfType(MarkdownView)?.file;
     if (active instanceof TFile) {
@@ -446,21 +424,13 @@ module.exports = class ColoriPlugin extends Plugin {
   async transformTrackedNote(mode) {
     const file = this.getTrackedFile();
     if (!file) return false;
-    const editor = this.getEditorForFile(file);
-    let changed = false;
-    if (editor) changed = this.transformEditor(editor, file, mode);
-    else {
-      const transform = mode === "refang" ? refangUrlText : defangUrlText;
-      const current = await this.app.vault.read(file);
-      const updated = transform(current);
-      if (updated !== current) {
-        await this.app.vault.modify(file, updated);
-        changed = true;
-      }
-    }
-    this.refreshSidebar();
-    if (changed) new Notice(mode === "refang" ? "URLs refanged." : "URLs defanged.");
-    return changed;
+    const transform = mode === "refang" ? refangUrlText : defangUrlText;
+    const current = await this.app.vault.read(file);
+    const updated = transform(current);
+    if (updated === current) return false;
+    await this.app.vault.modify(file, updated);
+    new Notice(mode === "refang" ? "URLs refanged." : "URLs defanged.");
+    return true;
   }
 
   scanIocs(text, type, limit) {
@@ -493,6 +463,31 @@ module.exports = class ColoriPlugin extends Plugin {
     if (wanted === "all" || wanted === "email") run("Email", /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi);
     if (wanted === "all" || wanted === "domain") run("Domain", /\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.|\[\.\]))+[a-z]{2,63}\b/gi);
     return results.slice(0, safeLimit);
+  }
+
+  countIocs(text) {
+    const source = typeof text === "string" ? text : "";
+    const counts = { URL: 0, IP: 0, Domain: 0, Hash: 0, Email: 0 };
+    const countMatches = (kind, regex, validate) => {
+      regex.lastIndex = 0;
+      let match;
+      const seen = new Set();
+      while ((match = regex.exec(source))) {
+        const value = match[0];
+        if ((!validate || validate(value)) && !seen.has(value.toLowerCase())) {
+          seen.add(value.toLowerCase());
+          counts[kind]++;
+        }
+        if (match.index === regex.lastIndex) regex.lastIndex++;
+      }
+    };
+    countMatches("URL", /\b(?:https?|hxxps?):\/\/[^\s<>"'`]+/gi);
+    countMatches("IP", /\b(?:\d{1,3}\.){3}\d{1,3}\b/g, (value) => value.split(".").every((part) => Number(part) <= 255));
+    countMatches("Hash", /\b(?:[a-f0-9]{64}|[a-f0-9]{40}|[a-f0-9]{32})\b/gi);
+    countMatches("Email", /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi);
+    countMatches("Domain", /\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.|\[\.\]))+[a-z]{2,63}\b/gi);
+    counts.Total = counts.URL + counts.IP + counts.Domain + counts.Hash + counts.Email;
+    return counts;
   }
 
   async openSidebar() {
@@ -734,7 +729,8 @@ class NoteToolsView extends ItemView {
   constructor(leaf, plugin) {
     super(leaf);
     this.plugin = plugin;
-    this.scanType = "all";
+    this.openSections = new Set();
+    this.scanTypes = new Set(["url", "ip", "domain", "hash", "email"]);
     this.scanLimit = 25;
     this.scanResults = null;
     this.scanPath = null;
@@ -744,15 +740,22 @@ class NoteToolsView extends ItemView {
   getDisplayText() { return "Note Tools"; }
   getIcon() { return "shield-check"; }
 
-  async onOpen() {
-    await this.render();
-  }
+  async onOpen() { await this.render(); }
 
-  makeDropdown(parent, title, open = false) {
+  makeDropdown(parent, key, title) {
     const details = parent.createEl("details", { cls: "ct-tools-dropdown" });
-    details.open = open;
+    details.open = this.openSections.has(key);
+    details.addEventListener("toggle", () => {
+      if (details.open) this.openSections.add(key);
+      else this.openSections.delete(key);
+    });
     details.createEl("summary", { text: title });
     return details.createDiv({ cls: "ct-tools-dropdown-body" });
+  }
+
+  async readTrackedText(file) {
+    const editor = this.plugin.getEditorForFile(file);
+    return editor ? editor.getValue() : this.app.vault.cachedRead(file);
   }
 
   async render() {
@@ -769,64 +772,88 @@ class NoteToolsView extends ItemView {
     }
 
     this.plugin.lastMarkdownPath = file.path;
+    if (this.scanPath && this.scanPath !== file.path) {
+      this.scanResults = null;
+      this.scanPath = null;
+    }
+
     container.createEl("div", { text: file.basename, cls: "ct-sidebar-note" });
     container.createEl("div", { text: file.path, cls: "ct-sidebar-path" });
 
-    const safeBody = this.makeDropdown(container, "Safe Links");
-    safeBody.createEl("div", {
-      text: this.plugin.settings.safeLinksEnabled ? "Protection is ON" : "Protection is OFF",
-      cls: this.plugin.settings.safeLinksEnabled ? "ct-status ct-status-on" : "ct-status"
-    });
-    safeBody.createEl("p", {
-      text: "Normal external-link clicks are blocked globally. Hold Ctrl/Cmd while clicking to open intentionally. Change this in plugin settings.",
-      cls: "ct-muted"
-    });
+    const text = await this.readTrackedText(file);
+    const counts = this.plugin.countIocs(text);
+    const summary = container.createDiv({ cls: "ct-ioc-summary" });
+    summary.createEl("strong", { text: `IOCs: ${counts.Total}` });
+    summary.createEl("span", { text: `URLs ${counts.URL} · IPs ${counts.IP} · Domains ${counts.Domain} · Hashes ${counts.Hash} · Emails ${counts.Email}` });
 
-    const defangBody = this.makeDropdown(container, "Defang / Refang");
+    const safeBody = this.makeDropdown(container, "safe", "Safe Links");
+    safeBody.createEl("div", { text: this.plugin.settings.safeLinksEnabled ? "Protection is ON" : "Protection is OFF", cls: this.plugin.settings.safeLinksEnabled ? "ct-status ct-status-on" : "ct-status" });
+    safeBody.createEl("p", { text: "When enabled, external web links in Markdown notes are disabled. Change this in plugin settings.", cls: "ct-muted" });
+
+    const defangBody = this.makeDropdown(container, "defang", "Defang / Refang");
     const transformActions = defangBody.createDiv({ cls: "ct-sidebar-actions" });
-    const defang = transformActions.createEl("button", { text: "Defang" });
-    defang.addEventListener("click", () => this.plugin.transformTrackedNote("defang"));
-    const refang = transformActions.createEl("button", { text: "Refang" });
-    refang.addEventListener("click", () => this.plugin.transformTrackedNote("refang"));
-    defangBody.createEl("p", { text: "Uses the editor selection when one exists; otherwise processes the entire tracked note.", cls: "ct-muted" });
+    const defang = transformActions.createEl("button", { text: "Defang note" });
+    defang.addEventListener("click", async () => { const changed = await this.plugin.transformTrackedNote("defang"); if (changed) { this.openSections.add("defang"); await this.render(); } });
+    const refang = transformActions.createEl("button", { text: "Refang note" });
+    refang.addEventListener("click", async () => { const changed = await this.plugin.transformTrackedNote("refang"); if (changed) { this.openSections.add("defang"); await this.render(); } });
+    defangBody.createEl("p", { text: "Sidebar buttons process the whole tracked note. Use the Command Palette commands for selected text.", cls: "ct-muted" });
 
-    const iocBody = this.makeDropdown(container, "IOC Scanner");
-    const controls = iocBody.createDiv({ cls: "ct-ioc-controls" });
-    const typeSelect = controls.createEl("select");
-    for (const [value, label] of [["all", "All types"], ["url", "URLs"], ["ip", "IP addresses"], ["domain", "Domains"], ["hash", "Hashes"], ["email", "Emails"]]) {
-      const option = typeSelect.createEl("option", { value, text: label });
-      if (value === this.scanType) option.selected = true;
+    const iocBody = this.makeDropdown(container, "ioc", "IOC Scanner");
+    const typeBox = iocBody.createDiv({ cls: "ct-ioc-type-grid" });
+    const choices = [["url", "URLs"], ["ip", "IPs"], ["domain", "Domains"], ["hash", "Hashes"], ["email", "Emails"]];
+    for (const [value, label] of choices) {
+      const item = typeBox.createEl("label", { cls: "ct-ioc-check" });
+      const box = item.createEl("input", { type: "checkbox" });
+      box.checked = this.scanTypes.has(value);
+      box.addEventListener("change", () => {
+        if (box.checked) this.scanTypes.add(value); else this.scanTypes.delete(value);
+        this.scanResults = null;
+      });
+      item.createSpan({ text: label });
     }
-    typeSelect.addEventListener("change", () => { this.scanType = typeSelect.value; this.scanResults = null; });
 
-    const limitSelect = controls.createEl("select");
+    const limitRow = iocBody.createDiv({ cls: "ct-ioc-limit-row" });
+    limitRow.createSpan({ text: "Maximum results" });
+    const limitSelect = limitRow.createEl("select");
     for (const limit of [10, 25, 50, 100, 250]) {
-      const option = limitSelect.createEl("option", { value: String(limit), text: `${limit} results` });
+      const option = limitSelect.createEl("option", { value: String(limit), text: String(limit) });
       if (limit === this.scanLimit) option.selected = true;
     }
     limitSelect.addEventListener("change", () => { this.scanLimit = Number(limitSelect.value); this.scanResults = null; });
 
     const scanButton = iocBody.createEl("button", { text: "Scan current note", cls: "ct-sidebar-wide-button" });
     scanButton.addEventListener("click", async () => {
+      if (!this.scanTypes.size) { new Notice("Choose at least one IOC type."); return; }
       const currentFile = this.plugin.getTrackedFile();
       if (!(currentFile instanceof TFile)) return;
-      const editor = this.plugin.getEditorForFile(currentFile);
-      const text = editor ? editor.getValue() : await this.app.vault.cachedRead(currentFile);
-      this.scanResults = this.plugin.scanIocs(text, this.scanType, this.scanLimit);
+      const currentText = await this.readTrackedText(currentFile);
+      const all = [];
+      for (const type of this.scanTypes) {
+        if (all.length >= this.scanLimit) break;
+        all.push(...this.plugin.scanIocs(currentText, type, this.scanLimit - all.length));
+      }
+      this.scanResults = all.slice(0, this.scanLimit);
       this.scanPath = currentFile.path;
-      this.render();
+      this.openSections.add("ioc");
+      await this.render();
     });
 
     if (this.scanResults && this.scanPath === file.path) {
+      const grouped = new Map();
+      for (const item of this.scanResults) {
+        if (!grouped.has(item.type)) grouped.set(item.type, []);
+        grouped.get(item.type).push(item.value);
+      }
       const resultBox = iocBody.createDiv({ cls: "ct-ioc-results" });
-      resultBox.createEl("div", { text: `${this.scanResults.length} result${this.scanResults.length === 1 ? "" : "s"}`, cls: "ct-muted" });
-      for (const result of this.scanResults) {
-        const row = resultBox.createDiv({ cls: "ct-ioc-row" });
-        const valueBox = row.createDiv({ cls: "ct-ioc-value" });
-        valueBox.createEl("span", { text: result.type, cls: "ct-ioc-type" });
-        valueBox.createEl("code", { text: result.value });
-        const copy = row.createEl("button", { text: "Copy" });
-        copy.addEventListener("click", () => navigator.clipboard.writeText(result.value));
+      resultBox.createEl("div", { text: `${this.scanResults.length} shown`, cls: "ct-muted" });
+      for (const [type, values] of grouped.entries()) {
+        resultBox.createEl("div", { text: `${type}${values.length === 1 ? "" : "s"}`, cls: "ct-ioc-group-title" });
+        for (const value of values) {
+          const row = resultBox.createDiv({ cls: "ct-ioc-row" });
+          row.createEl("code", { text: value });
+          const copy = row.createEl("button", { text: "Copy" });
+          copy.addEventListener("click", () => navigator.clipboard.writeText(value));
+        }
       }
       if (this.scanResults.length) {
         const copyAll = iocBody.createEl("button", { text: "Copy shown results", cls: "ct-sidebar-wide-button" });
@@ -834,50 +861,27 @@ class NoteToolsView extends ItemView {
       }
     }
 
-    const appearanceBody = this.makeDropdown(container, "Appearance");
+    const appearanceBody = this.makeDropdown(container, "appearance", "Appearance");
     const existing = this.plugin.getOverride("file", file.path);
     const appearance = existing ? { ...existing } : { color: this.plugin.settings.noteColor, size: this.plugin.settings.noteSize, icon: "" };
-    new Setting(appearanceBody).setName("Title color").addColorPicker((picker) =>
-      picker.setValue(appearance.color).onChange(async (value) => {
-        appearance.color = sanitizeColor(value, this.plugin.settings.noteColor);
-        await this.plugin.upsertOverride("file", file.path, appearance);
-      })
-    );
-    new Setting(appearanceBody).setName("Title size").addSlider((slider) =>
-      slider.setLimits(10, 40, 1).setValue(appearance.size).setDynamicTooltip().onChange(async (value) => {
-        appearance.size = sanitizeSize(value, 10, 40, this.plugin.settings.noteSize);
-        await this.plugin.upsertOverride("file", file.path, appearance);
-      })
-    );
-    new Setting(appearanceBody).setName("Icon").addText((input) =>
-      input.setPlaceholder("Optional").setValue(appearance.icon || "").onChange(async (value) => {
-        appearance.icon = sanitizeIcon(value);
-        await this.plugin.upsertOverride("file", file.path, appearance);
-      })
-    );
+    new Setting(appearanceBody).setName("Title color").addColorPicker((picker) => picker.setValue(appearance.color).onChange(async (value) => { appearance.color = sanitizeColor(value, this.plugin.settings.noteColor); await this.plugin.upsertOverride("file", file.path, appearance); }));
+    new Setting(appearanceBody).setName("Title size").addSlider((slider) => slider.setLimits(10, 40, 1).setValue(appearance.size).setDynamicTooltip().onChange(async (value) => { appearance.size = sanitizeSize(value, 10, 40, this.plugin.settings.noteSize); await this.plugin.upsertOverride("file", file.path, appearance); }));
+    new Setting(appearanceBody).setName("Icon").addText((input) => input.setPlaceholder("Optional").setValue(appearance.icon || "").onChange(async (value) => { appearance.icon = sanitizeIcon(value); await this.plugin.upsertOverride("file", file.path, appearance); }));
     if (existing) {
       const reset = appearanceBody.createEl("button", { text: "Reset appearance", cls: "ct-sidebar-wide-button" });
-      reset.addEventListener("click", async () => { await this.plugin.removeOverride("file", file.path); this.render(); });
+      reset.addEventListener("click", async () => { await this.plugin.removeOverride("file", file.path); this.openSections.add("appearance"); await this.render(); });
     }
 
-    const graphBody = this.makeDropdown(container, "Graph");
+    const graphBody = this.makeDropdown(container, "graph", "Graph");
     const count = this.plugin.getOutgoingConnections(file.path).length;
     const graphActions = graphBody.createDiv({ cls: "ct-sidebar-actions" });
     const connect = graphActions.createEl("button", { text: "Connect note" });
-    connect.addEventListener("click", () => new NoteSuggestModal(this.app, file.path, async (target) => {
-      await this.plugin.addConnection(file, target);
-      this.render();
-    }).open());
+    connect.addEventListener("click", () => new NoteSuggestModal(this.app, file.path, async (target) => { await this.plugin.addConnection(file, target); this.openSections.add("graph"); await this.render(); }).open());
     const manage = graphActions.createEl("button", { text: `Connections (${count})` });
     manage.addEventListener("click", () => new ConnectionsModal(this.app, this.plugin, file).open());
-    graphBody.createEl("p", {
-      text: this.plugin.settings.graphMatchNoteColors ? "Graph color matching is enabled globally." : "Graph color matching is disabled globally.",
-      cls: "ct-muted"
-    });
+    graphBody.createEl("p", { text: this.plugin.settings.graphMatchNoteColors ? "Graph color matching is enabled globally." : "Graph color matching is disabled globally.", cls: "ct-muted" });
 
-    const infoBody = this.makeDropdown(container, "Note Info");
-    const editor = this.plugin.getEditorForFile(file);
-    const text = editor ? editor.getValue() : await this.app.vault.cachedRead(file);
+    const infoBody = this.makeDropdown(container, "info", "Note Info");
     const words = (text.match(/\S+/g) || []).length;
     const resolved = this.app.metadataCache.resolvedLinks || {};
     const outgoing = resolved[file.path] ? Object.keys(resolved[file.path]).length : 0;
