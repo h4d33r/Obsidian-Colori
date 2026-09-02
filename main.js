@@ -163,7 +163,7 @@ function defangUrlText(value) {
   // Markdown inline links: remove the clickable wrapper completely.
   output = output.replace(/\[([^\]]+)\]\(([^)\s]+)(?:\s+["'][^"']*["'])?\)/g, (full, label, destination) => {
     if (!isWebDestination(destination)) return full;
-    return `${label} — ${defangDestination(destination)}`;
+    return `${label} - ${defangDestination(destination)}`;
   });
 
   // Markdown autolinks such as <https://example.com>.
