@@ -193,3 +193,98 @@ body:not([style*='--ct-note-icon: ""']) .nav-file-title-content::before {
   color: var(--text-muted);
   font-size: var(--font-ui-small);
 }
+
+
+/* Colori sidebar */
+.ct-sidebar {
+  padding: 10px 12px 24px;
+  overflow-y: auto;
+}
+
+.ct-sidebar h3 {
+  margin: 4px 0 12px;
+}
+
+.ct-sidebar-note {
+  font-weight: 600;
+  font-size: var(--font-ui-medium);
+}
+
+.ct-sidebar-path {
+  margin-top: 3px;
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  word-break: break-all;
+}
+
+.ct-sidebar-section {
+  margin: 20px 0 6px;
+  padding-bottom: 5px;
+  border-bottom: 1px solid var(--background-modifier-border);
+  font-size: var(--font-ui-small);
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.ct-sidebar .setting-item {
+  padding: 8px 0;
+  border-top: none;
+}
+
+.ct-sidebar-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.ct-sidebar-actions button,
+.ct-sidebar-wide-button {
+  width: 100%;
+}
+
+.ct-sidebar-wide-button {
+  margin-top: 8px;
+}
+
+.ct-ioc-label {
+  margin: 10px 0 4px;
+  font-size: var(--font-ui-smaller);
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.ct-ioc-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px;
+  align-items: center;
+  margin: 4px 0;
+}
+
+.ct-ioc-row code {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ct-ioc-row button {
+  padding: 2px 7px;
+  font-size: var(--font-ui-smaller);
+}
+
+.ct-note-info {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 5px 12px;
+  font-size: var(--font-ui-small);
+}
+
+.ct-note-info-label {
+  color: var(--text-muted);
+}
+
+.ct-note-info-value {
+  text-align: right;
+  overflow-wrap: anywhere;
+}

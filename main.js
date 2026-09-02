@@ -3,6 +3,8 @@ const {
   PluginSettingTab,
   Setting,
   Modal,
+  ItemView,
+  MarkdownView,
   FuzzySuggestModal,
   Notice,
   TFile,
@@ -14,6 +16,7 @@ const HUB_START_MARKER = "<!-- colori-folder-hub:start -->";
 const HUB_END_MARKER = "<!-- colori-folder-hub:end -->";
 const CONNECTIONS_START_MARKER = "<!-- colori-connections:start -->";
 const CONNECTIONS_END_MARKER = "<!-- colori-connections:end -->";
+const COLORI_VIEW_TYPE = "colori-sidebar";
 
 const DEFAULT_SETTINGS = Object.freeze({
   folderColor: "#f0a45d",
@@ -39,6 +42,8 @@ const DEFAULT_SETTINGS = Object.freeze({
   h6Color: "#ef8fde",
   h6Size: 16,
   graphMatchNoteColors: false,
+  safeLinksDefault: true,
+  safeLinkOverrides: [],
   overrides: [],
   folderHubs: [],
   connections: []
@@ -142,6 +147,14 @@ function defangUrlText(value) {
   });
 }
 
+function refangUrlText(value) {
+  if (typeof value !== "string" || !value) return value;
+  return value.replace(/\bhxxps?:\/\/[^\s<>"'`]+/gi, (url) => {
+    const protocol = url.toLowerCase().startsWith("hxxps://") ? "https://" : "http://";
+    return protocol + url.slice(url.indexOf("://") + 3).replace(/\[\.\]/g, ".");
+  });
+}
+
 function hexToGraphColor(value) {
   const safe = sanitizeColor(value, null);
   if (!safe) return null;
@@ -165,6 +178,13 @@ function normalizeOverride(raw, settings) {
   };
 }
 
+function normalizeSafeLinkOverride(raw) {
+  if (!raw || typeof raw !== "object") return null;
+  const path = sanitizePath(raw.path);
+  if (!path || typeof raw.enabled !== "boolean") return null;
+  return { path, enabled: raw.enabled };
+}
+
 function normalizeConnection(raw) {
   if (!raw || typeof raw !== "object") return null;
   const source = sanitizePath(raw.source);
@@ -175,7 +195,7 @@ function normalizeConnection(raw) {
 
 function normalizeSettings(raw) {
   const source = raw && typeof raw === "object" ? raw : {};
-  const result = { ...DEFAULT_SETTINGS, overrides: [], folderHubs: [], connections: [] };
+  const result = { ...DEFAULT_SETTINGS, overrides: [], folderHubs: [], connections: [], safeLinkOverrides: [] };
 
   for (const key of Object.keys(CSS_VARIABLES)) {
     if (key.endsWith("Color")) {
@@ -189,6 +209,17 @@ function normalizeSettings(raw) {
   result.folderIcon = sanitizeIcon(source.folderIcon);
   result.noteIcon = sanitizeIcon(source.noteIcon);
   result.graphMatchNoteColors = source.graphMatchNoteColors === true;
+  result.safeLinksDefault = source.safeLinksDefault !== false;
+
+  if (Array.isArray(source.safeLinkOverrides)) {
+    const seen = new Set();
+    for (const rawOverride of source.safeLinkOverrides) {
+      const override = normalizeSafeLinkOverride(rawOverride);
+      if (!override || seen.has(override.path)) continue;
+      seen.add(override.path);
+      result.safeLinkOverrides.push(override);
+    }
+  }
 
   if (Array.isArray(source.overrides)) {
     const seen = new Set();
@@ -283,22 +314,29 @@ module.exports = class ColoriPlugin extends Plugin {
       })
     );
 
+    this.registerView(COLORI_VIEW_TYPE, (leaf) => new ColoriSidebarView(leaf, this));
+
+    this.addRibbonIcon("palette", "Open Colori", () => this.openSidebar());
+
     this.addCommand({
-      id: "defang-urls",
-      name: "Defang URLs",
-      editorCallback: (editor) => this.defangEditorUrls(editor)
+      id: "open-colori-sidebar",
+      name: "Open sidebar",
+      callback: () => this.openSidebar()
     });
 
-    this.registerEvent(
-      this.app.workspace.on("editor-menu", (menu, editor) => {
-        menu.addItem((item) => {
-          item
-            .setTitle("Defang URLs")
-            .setIcon("unlink")
-            .onClick(() => this.defangEditorUrls(editor));
-        });
-      })
-    );
+    this.addCommand({
+      id: "defang-urls",
+      name: "Defang selection or current note",
+      callback: () => this.transformCurrentNote("defang", true)
+    });
+
+    this.addCommand({
+      id: "refang-urls",
+      name: "Refang selection or current note",
+      callback: () => this.transformCurrentNote("refang", true)
+    });
+
+    this.registerDomEvent(document, "click", (event) => this.handleExternalLinkClick(event), true);
 
     this.registerEvent(
       this.app.workspace.on("layout-change", () => this.applyGraphNodeColors())
@@ -362,32 +400,120 @@ module.exports = class ColoriPlugin extends Plugin {
     root.style.removeProperty("--graph-node-focused");
   }
 
-  defangEditorUrls(editor) {
-    if (!editor || typeof editor.getValue !== "function") return;
+  getActiveMarkdownView() {
+    return this.app.workspace.getActiveViewOfType(MarkdownView);
+  }
 
-    const selection = typeof editor.getSelection === "function" ? editor.getSelection() : "";
-    if (selection) {
-      const updated = defangUrlText(selection);
-      if (updated === selection) {
-        new Notice("No clickable HTTP or HTTPS URLs found in the selection.");
-        return;
+  getSafeLinksOverride(path) {
+    return this.settings.safeLinkOverrides.find((item) => item.path === path);
+  }
+
+  isSafeLinksEnabled(path) {
+    const override = this.getSafeLinksOverride(path);
+    return override ? override.enabled : this.settings.safeLinksDefault;
+  }
+
+  async setSafeLinksForNote(path, enabled) {
+    const safePath = sanitizePath(path);
+    if (!safePath || typeof enabled !== "boolean") return;
+    const existing = this.getSafeLinksOverride(safePath);
+    if (existing) existing.enabled = enabled;
+    else this.settings.safeLinkOverrides.push({ path: safePath, enabled });
+    await this.saveSettings();
+  }
+
+  async clearSafeLinksOverride(path) {
+    this.settings.safeLinkOverrides = this.settings.safeLinkOverrides.filter((item) => item.path !== path);
+    await this.saveSettings();
+  }
+
+  handleExternalLinkClick(event) {
+    const target = event.target instanceof Element ? event.target.closest("a") : null;
+    if (!target) return;
+    const href = target.getAttribute("href") || "";
+    if (!/^https?:\/\//i.test(href)) return;
+
+    const file = this.app.workspace.getActiveFile();
+    if (!(file instanceof TFile) || !this.isSafeLinksEnabled(file.path)) return;
+    if (event.ctrlKey || event.metaKey) return;
+
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    if (!this.safeLinksNoticeShown) {
+      this.safeLinksNoticeShown = true;
+      new Notice("Colori blocked an external link. Ctrl/Cmd-click to open it intentionally.");
+    }
+  }
+
+  async transformCurrentNote(mode, preferSelection = false) {
+    const transform = mode === "refang" ? refangUrlText : defangUrlText;
+    const view = this.getActiveMarkdownView();
+    const file = this.app.workspace.getActiveFile();
+    if (!(file instanceof TFile) || file.extension !== "md") return false;
+
+    if (preferSelection && view?.editor) {
+      const selection = view.editor.getSelection();
+      if (selection) {
+        const updated = transform(selection);
+        if (updated !== selection) view.editor.replaceSelection(updated);
+        this.refreshSidebar();
+        return updated !== selection;
       }
-      editor.replaceSelection(updated);
-      new Notice("Selected URLs defanged.");
-      return;
     }
 
-    const currentText = editor.getValue();
-    const updated = defangUrlText(currentText);
-    if (updated === currentText) {
-      new Notice("No clickable HTTP or HTTPS URLs found in this note.");
-      return;
+    if (view?.editor && view.file?.path === file.path) {
+      const current = view.editor.getValue();
+      const updated = transform(current);
+      if (updated !== current) view.editor.setValue(updated);
+      this.refreshSidebar();
+      return updated !== current;
     }
 
-    if (typeof editor.setValue === "function") {
-      editor.setValue(updated);
-      new Notice("URLs in this note defanged.");
+    const current = await this.app.vault.read(file);
+    const updated = transform(current);
+    if (updated !== current) await this.app.vault.modify(file, updated);
+    this.refreshSidebar();
+    return updated !== current;
+  }
+
+  async openSidebar() {
+    let leaf = this.app.workspace.getLeavesOfType(COLORI_VIEW_TYPE)[0];
+    if (!leaf) {
+      leaf = this.app.workspace.getRightLeaf(false);
+      if (!leaf) return;
+      await leaf.setViewState({ type: COLORI_VIEW_TYPE, active: true });
     }
+    this.app.workspace.revealLeaf(leaf);
+  }
+
+  refreshSidebar() {
+    for (const leaf of this.app.workspace.getLeavesOfType(COLORI_VIEW_TYPE)) {
+      if (leaf.view instanceof ColoriSidebarView) leaf.view.render();
+    }
+  }
+
+  extractIocs(text) {
+    const source = typeof text === "string" ? text : "";
+    const unique = (values) => [...new Set(values)].slice(0, 100);
+    const urls = unique(source.match(/\b(?:https?|hxxps?):\/\/[^\s<>"'`]+/gi) || []);
+    const emails = unique(source.match(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi) || []);
+    const hashes = unique(source.match(/\b(?:[a-f0-9]{64}|[a-f0-9]{40}|[a-f0-9]{32})\b/gi) || []);
+    const ipCandidates = source.match(/\b(?:\d{1,3}\.){3}\d{1,3}\b/g) || [];
+    const ips = unique(ipCandidates.filter((value) => value.split(".").every((part) => Number(part) <= 255)));
+    const domains = unique((source.match(/\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.|\[\.\]))+[a-z]{2,63}\b/gi) || [])
+      .filter((value) => !emails.some((email) => email.toLowerCase().endsWith(`@${value.toLowerCase()}`))));
+    return { urls, ips, domains, hashes, emails };
+  }
+
+  getNoteMetadata(file, text) {
+    const resolved = this.app.metadataCache.resolvedLinks || {};
+    const outgoing = resolved[file.path] ? Object.keys(resolved[file.path]).length : 0;
+    let backlinks = 0;
+    for (const links of Object.values(resolved)) {
+      if (links && Object.prototype.hasOwnProperty.call(links, file.path)) backlinks++;
+    }
+    const words = (text.match(/\S+/g) || []).length;
+    return { words, outgoing, backlinks };
   }
 
   getGraphRenderers() {
@@ -753,6 +879,16 @@ module.exports = class ColoriPlugin extends Plugin {
     const affectedSources = new Set();
     let changed = false;
 
+    for (const safeLink of this.settings.safeLinkOverrides) {
+      if (safeLink.path === safeOldPath) {
+        safeLink.path = newPath;
+        changed = true;
+      } else if (file instanceof TFolder && safeLink.path.startsWith(`${safeOldPath}/`)) {
+        safeLink.path = `${newPath}${safeLink.path.slice(safeOldPath.length)}`;
+        changed = true;
+      }
+    }
+
     for (const override of this.settings.overrides) {
       if (override.path === safeOldPath) {
         override.path = newPath;
@@ -824,6 +960,11 @@ module.exports = class ColoriPlugin extends Plugin {
       : parentPath(deletedPath);
     const affectedSources = new Set();
 
+    const beforeSafeLinks = this.settings.safeLinkOverrides.length;
+    this.settings.safeLinkOverrides = this.settings.safeLinkOverrides.filter(
+      (override) => !pathMatchesOrDescends(override.path, deletedPath)
+    );
+
     const beforeOverrides = this.settings.overrides.length;
     this.settings.overrides = this.settings.overrides.filter(
       (override) => !pathMatchesOrDescends(override.path, deletedPath)
@@ -843,6 +984,7 @@ module.exports = class ColoriPlugin extends Plugin {
     });
 
     if (
+      this.settings.safeLinkOverrides.length !== beforeSafeLinks ||
       this.settings.overrides.length !== beforeOverrides ||
       this.settings.folderHubs.length !== beforeHubs ||
       this.settings.connections.length !== beforeConnections
@@ -861,10 +1003,189 @@ module.exports = class ColoriPlugin extends Plugin {
   }
 
   async resetSettings() {
-    this.settings = { ...DEFAULT_SETTINGS, overrides: [], folderHubs: [], connections: [] };
+    this.settings = { ...DEFAULT_SETTINGS, overrides: [], folderHubs: [], connections: [], safeLinkOverrides: [] };
     await this.saveSettings();
   }
 };
+
+class ColoriSidebarView extends ItemView {
+  constructor(leaf, plugin) {
+    super(leaf);
+    this.plugin = plugin;
+  }
+
+  getViewType() {
+    return COLORI_VIEW_TYPE;
+  }
+
+  getDisplayText() {
+    return "Colori";
+  }
+
+  getIcon() {
+    return "palette";
+  }
+
+  async onOpen() {
+    this.registerEvent(this.app.workspace.on("active-leaf-change", () => this.render()));
+    this.registerEvent(this.app.workspace.on("file-open", () => this.render()));
+    await this.render();
+  }
+
+  async render() {
+    const container = this.containerEl.children[1];
+    if (!container) return;
+    container.empty();
+    container.addClass("ct-sidebar");
+
+    const file = this.app.workspace.getActiveFile();
+    container.createEl("h3", { text: "Colori" });
+
+    if (!(file instanceof TFile) || file.extension !== "md") {
+      container.createEl("p", { text: "Open a Markdown note to use Colori tools.", cls: "ct-muted" });
+      return;
+    }
+
+    const text = await this.app.vault.cachedRead(file);
+    const section = (title) => container.createEl("h4", { text: title, cls: "ct-sidebar-section" });
+
+    container.createEl("div", { text: file.basename, cls: "ct-sidebar-note" });
+    container.createEl("div", { text: file.path, cls: "ct-sidebar-path" });
+
+    section("Safe Links");
+    const safe = this.plugin.isSafeLinksEnabled(file.path);
+    const safeRow = new Setting(container).setName("Block normal clicks");
+    safeRow.addToggle((toggle) =>
+      toggle.setValue(safe).onChange(async (value) => {
+        await this.plugin.setSafeLinksForNote(file.path, value === true);
+        this.render();
+      })
+    );
+    const safeOverride = this.plugin.getSafeLinksOverride(file.path);
+    if (safeOverride) {
+      new Setting(container)
+        .setName("Note override")
+        .setDesc(`This note overrides the global ${this.plugin.settings.safeLinksDefault ? "ON" : "OFF"} default.`)
+        .addButton((button) => button.setButtonText("Use global").onClick(async () => {
+await this.plugin.clearSafeLinksOverride(file.path);
+this.render();
+        }));
+    }
+
+    section("Defang / Refang");
+    const tools = container.createDiv({ cls: "ct-sidebar-actions" });
+    const defang = tools.createEl("button", { text: "Defang" });
+    defang.addEventListener("click", async () => {
+      await this.plugin.transformCurrentNote("defang", true);
+      this.render();
+    });
+    const refang = tools.createEl("button", { text: "Refang" });
+    refang.addEventListener("click", async () => {
+      await this.plugin.transformCurrentNote("refang", true);
+      this.render();
+    });
+    container.createEl("p", { text: "Selection first; otherwise the whole current note.", cls: "ct-muted" });
+
+    section("Indicators");
+    const iocs = this.plugin.extractIocs(text);
+    const types = [
+      ["URLs", iocs.urls],
+      ["IPs", iocs.ips],
+      ["Domains", iocs.domains],
+      ["Hashes", iocs.hashes],
+      ["Emails", iocs.emails]
+    ];
+    let total = 0;
+    for (const [label, values] of types) {
+      total += values.length;
+      if (!values.length) continue;
+      container.createEl("div", { text: `${label} (${values.length})`, cls: "ct-ioc-label" });
+      for (const value of values.slice(0, 20)) {
+        const row = container.createDiv({ cls: "ct-ioc-row" });
+        row.createEl("code", { text: value });
+        const copy = row.createEl("button", { text: "Copy" });
+        copy.addEventListener("click", () => navigator.clipboard.writeText(value));
+      }
+    }
+    if (!total) container.createEl("p", { text: "No common IOCs detected in this note.", cls: "ct-muted" });
+    if (total) {
+      const all = types.flatMap(([, values]) => values);
+      const copyAll = container.createEl("button", { text: "Copy all IOCs", cls: "ct-sidebar-wide-button" });
+      copyAll.addEventListener("click", () => navigator.clipboard.writeText([...new Set(all)].join("\n")));
+    }
+
+    section("Appearance");
+    const existing = this.plugin.getOverride("file", file.path);
+    const appearance = existing
+      ? { ...existing }
+      : { color: this.plugin.settings.noteColor, size: this.plugin.settings.noteSize, icon: "" };
+
+    new Setting(container).setName("Title color").addColorPicker((picker) =>
+      picker.setValue(appearance.color).onChange(async (value) => {
+        appearance.color = sanitizeColor(value, this.plugin.settings.noteColor);
+        await this.plugin.upsertOverride("file", file.path, appearance);
+      })
+    );
+    new Setting(container).setName("Title size").addSlider((slider) =>
+      slider.setLimits(10, 40, 1).setValue(appearance.size).setDynamicTooltip().onChange(async (value) => {
+        appearance.size = sanitizeSize(value, 10, 40, this.plugin.settings.noteSize);
+        await this.plugin.upsertOverride("file", file.path, appearance);
+      })
+    );
+    new Setting(container).setName("Icon").addText((input) =>
+      input.setPlaceholder("Optional").setValue(appearance.icon || "").onChange(async (value) => {
+        appearance.icon = sanitizeIcon(value);
+        await this.plugin.upsertOverride("file", file.path, appearance);
+      })
+    );
+    if (existing) {
+      const reset = container.createEl("button", { text: "Reset appearance", cls: "ct-sidebar-wide-button" });
+      reset.addEventListener("click", async () => {
+        await this.plugin.removeOverride("file", file.path);
+        this.render();
+      });
+    }
+
+    section("Graph");
+    new Setting(container).setName("Match note colors").addToggle((toggle) =>
+      toggle.setValue(this.plugin.settings.graphMatchNoteColors).onChange(async (value) => {
+        this.plugin.settings.graphMatchNoteColors = value === true;
+        await this.plugin.saveSettings();
+      })
+    );
+    const count = this.plugin.getOutgoingConnections(file.path).length;
+    const graphActions = container.createDiv({ cls: "ct-sidebar-actions" });
+    const connect = graphActions.createEl("button", { text: "Connect note" });
+    connect.addEventListener("click", () => {
+      new NoteSuggestModal(this.app, file.path, async (target) => {
+        await this.plugin.addConnection(file, target);
+        this.render();
+      }).open();
+    });
+    const manage = graphActions.createEl("button", { text: `Connections (${count})` });
+    manage.addEventListener("click", () => new ConnectionsModal(this.app, this.plugin, file).open());
+
+    section("Note info");
+    const info = this.plugin.getNoteMetadata(file, text);
+    const infoGrid = container.createDiv({ cls: "ct-note-info" });
+    const addInfo = (name, value) => {
+      infoGrid.createEl("span", { text: name, cls: "ct-note-info-label" });
+      infoGrid.createEl("span", { text: String(value), cls: "ct-note-info-value" });
+    };
+    addInfo("Words", info.words);
+    addInfo("Backlinks", info.backlinks);
+    addInfo("Outgoing", info.outgoing);
+    addInfo("Created", new Date(file.stat.ctime).toLocaleString());
+    addInfo("Modified", new Date(file.stat.mtime).toLocaleString());
+
+    const refresh = container.createEl("button", { text: "Refresh", cls: "ct-sidebar-wide-button" });
+    refresh.addEventListener("click", () => this.render());
+  }
+
+  async onClose() {
+    this.containerEl.empty();
+  }
+}
 
 class ColoriLauncherModal extends Modal {
   constructor(app, plugin, file) {
@@ -1296,10 +1617,23 @@ class ColoriSettingTab extends PluginSettingTab {
       }
     }
 
-    this.addSection("Tools");
+    this.addSection("Safe Links");
     new Setting(containerEl)
-      .setName("Defang URLs")
-      .setDesc("Use the command palette or editor context menu to turn HTTP/HTTPS URLs into non-clickable hxxp/hxxps and [.] notation.");
+      .setName("Block normal external-link clicks")
+      .setDesc("Global default. When enabled, external HTTP/HTTPS links require Ctrl/Cmd-click. Individual notes can override this from the Colori sidebar.")
+      .addToggle((toggle) =>
+        toggle.setValue(this.plugin.settings.safeLinksDefault).onChange(async (value) => {
+          this.plugin.settings.safeLinksDefault = value === true;
+          await this.plugin.saveSettings();
+          this.plugin.refreshSidebar();
+        })
+      );
+
+    this.addSection("Sidebar tools");
+    new Setting(containerEl)
+      .setName("Colori sidebar")
+      .setDesc("Open the sidebar from the ribbon or Command Palette for Safe Links, Defang/Refang, IOC extraction, appearance, Graph controls, and note metadata.")
+      .addButton((button) => button.setButtonText("Open sidebar").onClick(() => this.plugin.openSidebar()));
 
     this.addSection("Graph");
     new Setting(containerEl)

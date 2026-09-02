@@ -1,9 +1,9 @@
 {
-  "id": "colori",
-  "name": "Colori",
-  "version": "1.3.0",
+  "id": "colori-dev",
+  "name": "Colori Dev",
+  "version": "1.4.0-beta.1",
   "minAppVersion": "1.13.7",
-  "description": "Customize Obsidian titles and graph relationships with per-item appearance controls, auto-synced folder hubs, and managed note connections.",
+  "description": "Development build of Colori with a sidebar workspace, Safe Links, IOC tools, appearance controls, and graph features.",
   "author": "H4d33r",
   "isDesktopOnly": false
 }
