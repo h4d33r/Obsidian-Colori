@@ -549,12 +549,26 @@ module.exports = class ColoriPlugin extends Plugin {
     return true;
   }
 
+  getUrlHosts(text) {
+    const source = typeof text === "string" ? text : "";
+    const hosts = new Set();
+    const regex = /\b(?:https?|hxxps?):\/\/([^\s<>"'`\/?)#]+)/gi;
+    let match;
+    while ((match = regex.exec(source))) {
+      const host = match[1].replace(/:\d+$/, "").replace(/\[\.\]/g, ".").toLowerCase();
+      if (host) hosts.add(host);
+      if (match.index === regex.lastIndex) regex.lastIndex++;
+    }
+    return hosts;
+  }
+
   scanIocs(text, type, limit) {
     const source = typeof text === "string" ? text : "";
     const safeLimit = IOC_LIMITS.has(Number(limit)) ? Number(limit) : 25;
     const wanted = ["all", "url", "ip", "domain", "hash", "email"].includes(type) ? type : "all";
     const results = [];
     const seen = new Set();
+    const urlHosts = this.getUrlHosts(source);
 
     const add = (kind, value) => {
       const normalized = value.trim();
@@ -577,13 +591,17 @@ module.exports = class ColoriPlugin extends Plugin {
     if (wanted === "all" || wanted === "ip") run("IP", /\b(?:\d{1,3}\.){3}\d{1,3}\b/g, (value) => value.split(".").every((part) => Number(part) <= 255));
     if (wanted === "all" || wanted === "hash") run("Hash", /\b(?:[a-f0-9]{64}|[a-f0-9]{40}|[a-f0-9]{32})\b/gi);
     if (wanted === "all" || wanted === "email") run("Email", /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi);
-    if (wanted === "all" || wanted === "domain") run("Domain", /\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.|\[\.\]))+[a-z]{2,63}\b/gi);
+    if (wanted === "all" || wanted === "domain") run("Domain", /\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.|\[\.\]))+[a-z]{2,63}\b/gi, (value) => {
+      const normalized = value.replace(/\[\.\]/g, ".").toLowerCase();
+      return !urlHosts.has(normalized);
+    });
     return results.slice(0, safeLimit);
   }
 
   countIocs(text) {
     const source = typeof text === "string" ? text : "";
     const counts = { URL: 0, IP: 0, Domain: 0, Hash: 0, Email: 0 };
+    const urlHosts = this.getUrlHosts(source);
     const countMatches = (kind, regex, validate) => {
       regex.lastIndex = 0;
       let match;
@@ -601,7 +619,10 @@ module.exports = class ColoriPlugin extends Plugin {
     countMatches("IP", /\b(?:\d{1,3}\.){3}\d{1,3}\b/g, (value) => value.split(".").every((part) => Number(part) <= 255));
     countMatches("Hash", /\b(?:[a-f0-9]{64}|[a-f0-9]{40}|[a-f0-9]{32})\b/gi);
     countMatches("Email", /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi);
-    countMatches("Domain", /\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.|\[\.\]))+[a-z]{2,63}\b/gi);
+    countMatches("Domain", /\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.|\[\.\]))+[a-z]{2,63}\b/gi, (value) => {
+      const normalized = value.replace(/\[\.\]/g, ".").toLowerCase();
+      return !urlHosts.has(normalized);
+    });
     counts.Total = counts.URL + counts.IP + counts.Domain + counts.Hash + counts.Email;
     return counts;
   }
