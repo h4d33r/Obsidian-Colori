@@ -1,9 +1,9 @@
 {
   "id": "colori-dev",
   "name": "Colori Dev",
-  "version": "1.4.0-beta.1",
+  "version": "1.4.0-beta.2",
   "minAppVersion": "1.13.7",
-  "description": "Development build of Colori with a sidebar workspace, Safe Links, IOC tools, appearance controls, and graph features.",
+  "description": "Development build with Note Tools, Safe Links, controlled IOC scanning, appearance controls, and graph features.",
   "author": "H4d33r",
   "isDesktopOnly": false
 }
