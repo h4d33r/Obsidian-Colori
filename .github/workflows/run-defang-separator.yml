@@ -1,0 +1,30 @@
+name: Run defang separator fix
+
+on:
+  push:
+    branches: [dev]
+    paths:
+      - .github/run-defang-separator
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: dev
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: python .github/scripts/fix_defang_separator.py
+      - run: node --check main.js
+      - run: |
+          git config user.name "H4d33r"
+          git config user.email "79756288+h4d33r@users.noreply.github.com"
+          git add main.js
+          git commit -m "fix: use hyphen in defanged Markdown links"
+          git push origin dev
