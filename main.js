@@ -188,7 +188,18 @@ function defangUrlText(value) {
 
 function refangUrlText(value) {
   if (typeof value !== "string" || !value) return value;
-  return value
+  let output = value;
+
+  // Reverse Colori's clean Markdown-link defang format:
+  // Label - hxxps://example[.]com  ->  [Label](https://example.com)
+  // Label - example[.]com          ->  [Label](example.com)
+  output = output.replace(/^(\s*(?:[-*>]\s*)?)(.+?)\s+-\s+((?:hxxps?:\/\/)?(?:www\.)?(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\[\.\])+[a-z]{2,63}(?::\d{1,5})?(?:[\/?#][^\s]*)?)\s*$/gim, (full, prefix, label, destination) => {
+    const cleanLabel = label.trim();
+    const cleanDestination = refangDestination(destination);
+    return cleanLabel ? `${prefix}[${cleanLabel}](${cleanDestination})` : full;
+  });
+
+  return output
     .replace(/\bhxxps?:\/\/[^\s<>"'`]+/gi, (url) => refangDestination(url))
     .replace(/\b(?:www\.)?(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\[\.\])+[a-z]{2,63}(?::\d{1,5})?(?:[\/?#][^\s<>"'`]*)?/gi, (domain) => refangDestination(domain));
 }
@@ -919,13 +930,40 @@ class NoteToolsView extends ItemView {
 
     const text = await this.readTrackedText(file);
     const counts = this.plugin.countIocs(text);
-    const summary = container.createDiv({ cls: "ct-ioc-summary" });
-    summary.createEl("strong", { text: `IOCs: ${counts.Total}` });
-    summary.createEl("span", { text: `URLs ${counts.URL} · IPs ${counts.IP} · Domains ${counts.Domain} · Hashes ${counts.Hash} · Emails ${counts.Email}` });
 
-    const safeBody = this.makeDropdown(container, "safe", "Safe Links");
-    safeBody.createEl("div", { text: this.plugin.settings.safeLinksEnabled ? "Protection is ON" : "Protection is OFF", cls: this.plugin.settings.safeLinksEnabled ? "ct-status ct-status-on" : "ct-status" });
-    safeBody.createEl("p", { text: "Normal clicks on web links are blocked, including Markdown links such as [Google](google.com). Hold Ctrl/Cmd while clicking to open intentionally.", cls: "ct-muted" });
+    const safeRow = container.createDiv({ cls: "ct-safe-links-row" });
+    safeRow.createSpan({ text: "Safe Links" });
+    const safeToggle = safeRow.createEl("button", {
+      text: this.plugin.settings.safeLinksEnabled ? "ON" : "OFF",
+      cls: this.plugin.settings.safeLinksEnabled ? "mod-cta" : ""
+    });
+    safeToggle.setAttribute("aria-pressed", this.plugin.settings.safeLinksEnabled ? "true" : "false");
+    safeToggle.addEventListener("click", async () => {
+      this.plugin.settings.safeLinksEnabled = !this.plugin.settings.safeLinksEnabled;
+      this.plugin.blockNoticeShown = false;
+      await this.plugin.saveSettings();
+      await this.render();
+    });
+
+    const infoCard = container.createDiv({ cls: "ct-note-info-card" });
+    infoCard.createEl("div", { text: "Note Info", cls: "ct-note-info-title" });
+    const infoGrid = infoCard.createDiv({ cls: "ct-note-info" });
+    const words = (text.match(/\S+/g) || []).length;
+    const lines = text ? text.split(/\r?\n/).length : 0;
+    const size = file.stat.size < 1024 ? `${file.stat.size} B` : `${(file.stat.size / 1024).toFixed(1)} KB`;
+    const infoRows = [
+      ["Total IOCs", counts.Total],
+      ["IOC breakdown", `URL ${counts.URL} · IP ${counts.IP} · Domain ${counts.Domain} · Hash ${counts.Hash} · Email ${counts.Email}`],
+      ["Words", words],
+      ["Lines", lines],
+      ["File size", size],
+      ["Created", new Date(file.stat.ctime).toLocaleString()],
+      ["Modified", new Date(file.stat.mtime).toLocaleString()]
+    ];
+    for (const [name, value] of infoRows) {
+      infoGrid.createEl("span", { text: name, cls: "ct-note-info-label" });
+      infoGrid.createEl("span", { text: String(value), cls: "ct-note-info-value" });
+    }
 
     const defangBody = this.makeDropdown(container, "defang", "Defang / Refang");
     const transformActions = defangBody.createDiv({ cls: "ct-sidebar-actions" });
@@ -1020,17 +1058,6 @@ class NoteToolsView extends ItemView {
     manage.addEventListener("click", () => new ConnectionsModal(this.app, this.plugin, file).open());
     graphBody.createEl("p", { text: this.plugin.settings.graphMatchNoteColors ? "Graph color matching is enabled globally." : "Graph color matching is disabled globally.", cls: "ct-muted" });
 
-    const infoBody = this.makeDropdown(container, "info", "Note Info");
-    const words = (text.match(/\S+/g) || []).length;
-    const resolved = this.app.metadataCache.resolvedLinks || {};
-    const outgoing = resolved[file.path] ? Object.keys(resolved[file.path]).length : 0;
-    let backlinks = 0;
-    for (const links of Object.values(resolved)) if (links && Object.prototype.hasOwnProperty.call(links, file.path)) backlinks++;
-    const grid = infoBody.createDiv({ cls: "ct-note-info" });
-    for (const [name, value] of [["Words", words], ["Backlinks", backlinks], ["Outgoing", outgoing], ["Created", new Date(file.stat.ctime).toLocaleString()], ["Modified", new Date(file.stat.mtime).toLocaleString()]]) {
-      grid.createEl("span", { text: name, cls: "ct-note-info-label" });
-      grid.createEl("span", { text: String(value), cls: "ct-note-info-value" });
-    }
   }
 }
 

@@ -223,3 +223,39 @@ body.ct-safe-links .workspace-leaf-content[data-type="markdown"] .cm-url {
 .ct-ioc-check { display: flex; align-items: center; gap: 6px; }
 .ct-ioc-limit-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 8px 0; }
 .ct-ioc-group-title { margin: 12px 0 5px; font-size: var(--font-ui-small); font-weight: 700; color: var(--text-muted); }
+
+
+/* Always-visible Note Info and Safe Links control */
+.ct-safe-links-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 12px 0 10px;
+  padding: 9px 10px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  background: var(--background-secondary);
+  font-weight: 600;
+}
+
+.ct-safe-links-row button {
+  min-width: 56px;
+}
+
+.ct-note-info-card {
+  margin: 0 0 10px;
+  padding: 10px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  background: var(--background-secondary);
+}
+
+.ct-note-info-title {
+  margin-bottom: 8px;
+  font-weight: 700;
+}
+
+.ct-note-info-card .ct-note-info {
+  grid-template-columns: minmax(90px, auto) minmax(0, 1fr);
+}
