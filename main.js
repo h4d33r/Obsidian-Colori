@@ -8,7 +8,8 @@ const {
   Notice,
   TFile,
   TFolder,
-  normalizePath
+  normalizePath,
+  requestUrl
 } = require("obsidian");
 
 const VIEW_TYPE = "colori-note-tools";
@@ -20,6 +21,9 @@ const HEX_COLOR_RE = /^#[0-9a-fA-F]{6}$/;
 const MAX_ICON_CODE_POINTS = 12;
 const MAX_PATH_LENGTH = 4096;
 const IOC_LIMITS = new Set([10, 25, 50, 100, 250]);
+const MAX_LOCAL_IMAGE_BYTES = 20 * 1024 * 1024;
+const MAX_REMOTE_IMAGES_PER_RUN = 200;
+const LOCAL_IMAGE_EXTENSIONS = new Set(["png", "jpg", "jpeg", "gif", "webp", "bmp", "avif", "ico"]);
 
 const DEFAULT_SETTINGS = Object.freeze({
   folderColor: "#f0a45d",
@@ -337,6 +341,16 @@ module.exports = class ColoriPlugin extends Plugin {
       name: "Refang selection or current note",
       editorCallback: (editor, view) => this.transformEditor(editor, view?.file, "refang")
     });
+    this.addCommand({
+      id: "localize-remote-images-current-note",
+      name: "Localize remote images in current note",
+      callback: async () => {
+        const file = this.getTrackedFile();
+        if (!(file instanceof TFile)) { new Notice("Open a Markdown note first."); return; }
+        await this.localizeRemoteImages(file);
+        this.refreshSidebar();
+      }
+    });
 
     const rememberMarkdown = () => {
       const view = this.app.workspace.getActiveViewOfType(MarkdownView);
@@ -558,6 +572,165 @@ module.exports = class ColoriPlugin extends Plugin {
     await this.app.vault.modify(file, updated);
     new Notice(mode === "refang" ? "Note refanged." : "Note defanged.");
     return true;
+  }
+
+
+  getRemoteImageEmbeds(text) {
+    const source = typeof text === "string" ? text : "";
+    const results = [];
+
+    const markdown = /!\[([^\]]*)\]\(\s*(https?:\/\/[^\s)]+)(?:\s+["'][^"']*["'])?\s*\)/gi;
+    let match;
+    while ((match = markdown.exec(source))) {
+      results.push({ kind: "markdown", full: match[0], url: match[2], alt: match[1] || "" });
+      if (match.index === markdown.lastIndex) markdown.lastIndex++;
+    }
+
+    const html = /<img\b[^>]*\bsrc\s*=\s*(["'])(https?:\/\/.*?)\1[^>]*>/gi;
+    while ((match = html.exec(source))) {
+      const altMatch = match[0].match(/\balt\s*=\s*(["'])(.*?)\1/i);
+      results.push({ kind: "html", full: match[0], url: match[2], alt: altMatch ? altMatch[2] : "" });
+      if (match.index === html.lastIndex) html.lastIndex++;
+    }
+
+    return results;
+  }
+
+  getResponseHeader(headers, name) {
+    if (!headers || typeof headers !== "object") return "";
+    const wanted = String(name).toLowerCase();
+    for (const [key, value] of Object.entries(headers)) {
+      if (String(key).toLowerCase() === wanted) return String(value || "");
+    }
+    return "";
+  }
+
+  getLocalImageExtension(url, contentType) {
+    const mime = String(contentType || "").split(";", 1)[0].trim().toLowerCase();
+    const mimeMap = {
+      "image/png": "png",
+      "image/jpeg": "jpg",
+      "image/gif": "gif",
+      "image/webp": "webp",
+      "image/bmp": "bmp",
+      "image/avif": "avif",
+      "image/x-icon": "ico",
+      "image/vnd.microsoft.icon": "ico"
+    };
+    if (mimeMap[mime]) return mimeMap[mime];
+
+    try {
+      const pathname = new URL(url).pathname;
+      const last = pathname.split("/").pop() || "";
+      const dot = last.lastIndexOf(".");
+      if (dot >= 0) {
+        let ext = last.slice(dot + 1).toLowerCase();
+        if (ext === "jpeg") ext = "jpg";
+        if (LOCAL_IMAGE_EXTENSIONS.has(ext)) return ext;
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  buildLocalImageFilename(url, extension) {
+    let base = "remote-image";
+    try {
+      const pathname = decodeURIComponent(new URL(url).pathname);
+      const last = pathname.split("/").filter(Boolean).pop() || "remote-image";
+      base = last.replace(/\.[^.]+$/, "") || "remote-image";
+    } catch (_) {}
+    base = base
+      .replace(/[\\/:*?"<>|\u0000-\u001f]/g, "-")
+      .replace(/\s+/g, "-")
+      .replace(/-+/g, "-")
+      .replace(/^[.-]+|[.-]+$/g, "")
+      .slice(0, 80) || "remote-image";
+    return `${base}.${extension}`;
+  }
+
+  async downloadRemoteImage(url, noteFile) {
+    let response;
+    try {
+      response = await requestUrl({
+        url,
+        method: "GET",
+        headers: { Accept: "image/avif,image/webp,image/png,image/jpeg,image/gif,image/*;q=0.8" }
+      });
+    } catch (error) {
+      throw new Error(`Download failed: ${error?.message || error}`);
+    }
+
+    if (!response || response.status < 200 || response.status >= 300) {
+      throw new Error(`HTTP ${response?.status || "error"}`);
+    }
+
+    const contentLength = Number(this.getResponseHeader(response.headers, "content-length"));
+    if (Number.isFinite(contentLength) && contentLength > MAX_LOCAL_IMAGE_BYTES) {
+      throw new Error("Image is larger than 20 MB");
+    }
+
+    const data = response.arrayBuffer;
+    if (!(data instanceof ArrayBuffer) || data.byteLength === 0) throw new Error("Empty image response");
+    if (data.byteLength > MAX_LOCAL_IMAGE_BYTES) throw new Error("Image is larger than 20 MB");
+
+    const contentType = this.getResponseHeader(response.headers, "content-type");
+    const extension = this.getLocalImageExtension(url, contentType);
+    if (!extension) throw new Error("Unsupported or unknown image type");
+
+    const filename = this.buildLocalImageFilename(url, extension);
+    const attachmentPath = await this.app.fileManager.getAvailablePathForAttachment(filename, noteFile.path);
+    await this.app.vault.createBinary(attachmentPath, data);
+    const created = this.app.vault.getAbstractFileByPath(attachmentPath);
+    if (!(created instanceof TFile)) throw new Error("Attachment was not created");
+    return created;
+  }
+
+  async localizeRemoteImages(file) {
+    if (!(file instanceof TFile) || file.extension !== "md") return false;
+    const editor = this.getEditorForFile(file);
+    const current = editor ? editor.getValue() : await this.app.vault.read(file);
+    const allEmbeds = this.getRemoteImageEmbeds(current);
+    if (!allEmbeds.length) {
+      new Notice("No remote image embeds found in this note.");
+      return false;
+    }
+
+    const embeds = allEmbeds.slice(0, MAX_REMOTE_IMAGES_PER_RUN);
+    const downloaded = new Map();
+    const failed = new Map();
+
+    for (const embed of embeds) {
+      if (downloaded.has(embed.url) || failed.has(embed.url)) continue;
+      try {
+        downloaded.set(embed.url, await this.downloadRemoteImage(embed.url, file));
+      } catch (error) {
+        failed.set(embed.url, error?.message || String(error));
+        console.warn("Colori: remote image localization failed", embed.url, error);
+      }
+    }
+
+    let updated = current;
+    let localized = 0;
+    for (const embed of embeds) {
+      const attachment = downloaded.get(embed.url);
+      if (!(attachment instanceof TFile)) continue;
+      const localLink = `!${this.app.fileManager.generateMarkdownLink(attachment, file.path, undefined, embed.alt || undefined)}`;
+      if (!updated.includes(embed.full)) continue;
+      updated = updated.replace(embed.full, localLink);
+      localized++;
+    }
+
+    if (updated !== current) {
+      if (editor) editor.setValue(updated);
+      else await this.app.vault.modify(file, updated);
+    }
+
+    const skipped = Math.max(0, allEmbeds.length - embeds.length);
+    const parts = [`Localized ${localized} image${localized === 1 ? "" : "s"}.`];
+    if (failed.size) parts.push(`${failed.size} download${failed.size === 1 ? "" : "s"} failed.`);
+    if (skipped) parts.push(`${skipped} skipped because the per-run limit is ${MAX_REMOTE_IMAGES_PER_RUN}.`);
+    new Notice(parts.join(" "));
+    return localized > 0;
   }
 
   getUrlHosts(text) {
@@ -1059,6 +1232,20 @@ class NoteToolsView extends ItemView {
     refang.addEventListener("mousedown", (event) => event.preventDefault());
     refang.addEventListener("click", async () => { const changed = await this.plugin.transformTrackedNote("refang"); if (changed) { this.openSections.add("defang"); await this.render(); } });
     defangBody.createEl("p", { text: "If text is selected in the note, only the selection is processed. Otherwise the whole note is processed.", cls: "ct-muted" });
+
+    const localImagesBody = this.makeDropdown(container, "local-images", "Local Images");
+    const remoteImages = this.plugin.getRemoteImageEmbeds(text);
+    localImagesBody.createEl("p", { text: `Remote image embeds: ${remoteImages.length}`, cls: "ct-muted" });
+    const localizeButton = localImagesBody.createEl("button", { text: "Localize remote images", cls: "ct-sidebar-wide-button" });
+    localizeButton.disabled = remoteImages.length === 0;
+    localizeButton.addEventListener("click", async () => {
+      localizeButton.disabled = true;
+      localizeButton.setText("Localizing…");
+      await this.plugin.localizeRemoteImages(file);
+      this.openSections.add("local-images");
+      await this.render();
+    });
+    localImagesBody.createEl("p", { text: "Downloads HTTP/HTTPS image embeds into your Obsidian attachment folder and rewrites this note to the local copy. Normal links are not changed.", cls: "ct-muted" });
 
     const iocBody = this.makeDropdown(container, "ioc", "IOC Scanner");
     const typeBox = iocBody.createDiv({ cls: "ct-ioc-type-grid" });
