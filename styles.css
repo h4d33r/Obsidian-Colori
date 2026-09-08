@@ -411,3 +411,75 @@ body.ct-safe-links .workspace-leaf-content[data-type="markdown"] .cm-url {
   margin-top: 12px;
   margin-bottom: 0;
 }
+
+
+/* Appearance v8: deterministic narrow-sidebar layout */
+.ct-appearance-body .ct-appearance-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 3px 0 2px;
+}
+
+.ct-appearance-body .ct-appearance-row {
+  display: grid;
+  grid-template-columns: 96px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  min-height: 34px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.ct-appearance-body .ct-appearance-label {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  line-height: 1.2;
+  color: var(--text-normal);
+  white-space: nowrap;
+}
+
+.ct-appearance-body .ct-appearance-control {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
+  min-width: 0;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+.ct-appearance-body .ct-appearance-color {
+  width: 34px;
+  height: 28px;
+  flex: 0 0 34px;
+  margin: 0;
+  padding: 0;
+  cursor: pointer;
+}
+
+.ct-appearance-body .ct-appearance-size-value {
+  width: 26px;
+  flex: 0 0 26px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+}
+
+.ct-appearance-body .ct-appearance-range {
+  flex: 1 1 auto;
+  width: auto;
+  min-width: 0;
+  margin: 0;
+}
+
+.ct-appearance-body .ct-appearance-icon {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  margin: 0;
+}

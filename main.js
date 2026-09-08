@@ -1326,15 +1326,55 @@ class NoteToolsView extends ItemView {
     appearanceBody.addClass("ct-appearance-body");
     const existing = this.plugin.getOverride("file", file.path);
     const appearance = existing ? { ...existing } : { color: this.plugin.settings.noteColor, size: this.plugin.settings.noteSize, icon: "" };
-    const colorSetting = new Setting(appearanceBody).setName("Title color").addColorPicker((picker) => picker.setValue(appearance.color).onChange(async (value) => { appearance.color = sanitizeColor(value, this.plugin.settings.noteColor); await this.plugin.upsertOverride("file", file.path, appearance); }));
-    colorSetting.settingEl.addClass("ct-appearance-setting");
-    const sizeSetting = new Setting(appearanceBody).setName("Title size").addSlider((slider) => slider.setLimits(10, 40, 1).setValue(appearance.size).setDynamicTooltip().onChange(async (value) => { appearance.size = sanitizeSize(value, 10, 40, this.plugin.settings.noteSize); await this.plugin.upsertOverride("file", file.path, appearance); }));
-    sizeSetting.settingEl.addClass("ct-appearance-setting");
-    const iconSetting = new Setting(appearanceBody).setName("Icon").addText((input) => input.setPlaceholder("Optional").setValue(appearance.icon || "").onChange(async (value) => { appearance.icon = sanitizeIcon(value); await this.plugin.upsertOverride("file", file.path, appearance); }));
-    iconSetting.settingEl.addClass("ct-appearance-setting");
+    const appearanceGrid = appearanceBody.createDiv({ cls: "ct-appearance-grid" });
+
+    const makeAppearanceRow = (label) => {
+      const row = appearanceGrid.createDiv({ cls: "ct-appearance-row" });
+      row.createDiv({ text: label, cls: "ct-appearance-label" });
+      return row.createDiv({ cls: "ct-appearance-control" });
+    };
+
+    const colorControl = makeAppearanceRow("Title color");
+    const colorInput = colorControl.createEl("input", { type: "color", cls: "ct-appearance-color" });
+    colorInput.value = sanitizeColor(appearance.color, this.plugin.settings.noteColor);
+    colorInput.addEventListener("change", async () => {
+      appearance.color = sanitizeColor(colorInput.value, this.plugin.settings.noteColor);
+      await this.plugin.upsertOverride("file", file.path, appearance);
+    });
+
+    const sizeControl = makeAppearanceRow("Title size");
+    const sizeValue = sizeControl.createSpan({ text: String(appearance.size), cls: "ct-appearance-size-value" });
+    const sizeInput = sizeControl.createEl("input", { type: "range", cls: "ct-appearance-range" });
+    sizeInput.min = "10";
+    sizeInput.max = "40";
+    sizeInput.step = "1";
+    sizeInput.value = String(appearance.size);
+    sizeInput.addEventListener("input", () => {
+      sizeValue.setText(sizeInput.value);
+    });
+    sizeInput.addEventListener("change", async () => {
+      appearance.size = sanitizeSize(sizeInput.value, 10, 40, this.plugin.settings.noteSize);
+      sizeValue.setText(String(appearance.size));
+      await this.plugin.upsertOverride("file", file.path, appearance);
+    });
+
+    const iconControl = makeAppearanceRow("Icon");
+    const iconInput = iconControl.createEl("input", { type: "text", cls: "ct-appearance-icon" });
+    iconInput.placeholder = "Optional";
+    iconInput.value = appearance.icon || "";
+    iconInput.addEventListener("change", async () => {
+      appearance.icon = sanitizeIcon(iconInput.value);
+      iconInput.value = appearance.icon;
+      await this.plugin.upsertOverride("file", file.path, appearance);
+    });
+
     if (existing) {
       const reset = appearanceBody.createEl("button", { text: "Reset appearance", cls: "ct-sidebar-wide-button" });
-      reset.addEventListener("click", async () => { await this.plugin.removeOverride("file", file.path); this.openSections.add("appearance"); await this.render(); });
+      reset.addEventListener("click", async () => {
+        await this.plugin.removeOverride("file", file.path);
+        this.openSections.add("appearance");
+        await this.render();
+      });
     }
 
     const graphBody = this.makeDropdown(container, "graph", "Connections");
