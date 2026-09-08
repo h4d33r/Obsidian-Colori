@@ -1207,26 +1207,58 @@ class NoteToolsView extends ItemView {
   }
 
 
+  countImageEmbeds(text) {
+    const source = typeof text === "string" ? text : "";
+    let count = 0;
+
+    // Standard Markdown images, including remote URLs and local Markdown paths.
+    const markdown = /!\[[^\]]*\]\(\s*[^)]+\)/g;
+    count += (source.match(markdown) || []).length;
+
+    // Obsidian image embeds such as ![[image.png]] or ![[image.png|500]].
+    const wiki = /!\[\[([^\]]+)\]\]/g;
+    let match;
+    while ((match = wiki.exec(source))) {
+      const target = String(match[1] || "").split("|", 1)[0].split("#", 1)[0].trim();
+      if (/\.(?:png|jpe?g|gif|webp|bmp|svg|avif|ico)$/i.test(target)) count++;
+      if (match.index === wiki.lastIndex) wiki.lastIndex++;
+    }
+
+    // Raw HTML images.
+    count += (source.match(/<img\b[^>]*>/gi) || []).length;
+    return count;
+  }
+
   renderNoteInfo(parent, file, text, counts) {
     const infoCard = parent.createDiv({ cls: "ct-note-info-card" });
     infoCard.createEl("div", { text: "Note Info", cls: "ct-note-info-title" });
     const infoGrid = infoCard.createDiv({ cls: "ct-note-info" });
     const words = (text.match(/\S+/g) || []).length;
     const lines = text ? text.split(/\r?\n/).length : 0;
+    const images = this.countImageEmbeds(text);
     const size = file.stat.size < 1024 ? `${file.stat.size} B` : `${(file.stat.size / 1024).toFixed(1)} KB`;
-    const infoRows = [
-      ["Total IOCs", counts.Total],
-      ["IOC breakdown", `URL ${counts.URL} · IP ${counts.IP} · Domain ${counts.Domain} · Hash ${counts.Hash} · Email ${counts.Email}`],
-      ["Words", words],
-      ["Lines", lines],
-      ["File size", size],
-      ["Created", new Date(file.stat.ctime).toLocaleString()],
-      ["Modified", new Date(file.stat.mtime).toLocaleString()]
-    ];
-    for (const [name, value] of infoRows) {
+
+    const addInfoRow = (name, value, valueClass = "") => {
       infoGrid.createEl("span", { text: name, cls: "ct-note-info-label" });
-      infoGrid.createEl("span", { text: String(value), cls: "ct-note-info-value" });
+      infoGrid.createEl("span", { text: String(value), cls: `ct-note-info-value ${valueClass}`.trim() });
+    };
+
+    addInfoRow("Total IOCs", counts.Total, "ct-note-info-ioc-total");
+
+    infoGrid.createEl("span", { text: "IOC breakdown", cls: "ct-note-info-label ct-ioc-breakdown-label" });
+    const breakdown = infoGrid.createDiv({ cls: "ct-ioc-breakdown" });
+    for (const [label, value] of [["URL", counts.URL], ["IP", counts.IP], ["Domain", counts.Domain], ["Hash", counts.Hash], ["Email", counts.Email]]) {
+      const pill = breakdown.createSpan({ cls: "ct-ioc-pill" });
+      pill.createSpan({ text: label, cls: "ct-ioc-pill-label" });
+      pill.createSpan({ text: String(value), cls: "ct-ioc-pill-count" });
     }
+
+    addInfoRow("Words", words);
+    addInfoRow("Lines", lines);
+    addInfoRow("Images", images);
+    addInfoRow("File size", size);
+    addInfoRow("Created", new Date(file.stat.ctime).toLocaleString());
+    addInfoRow("Modified", new Date(file.stat.mtime).toLocaleString());
   }
 
   async render() {
@@ -1234,7 +1266,9 @@ class NoteToolsView extends ItemView {
     if (!container) return;
     container.empty();
     container.addClass("ct-sidebar");
-    container.createEl("h3", { text: "Note Tools" });
+    const sidebarHeader = container.createDiv({ cls: "ct-sidebar-header" });
+    sidebarHeader.createDiv({ text: "Colori", cls: "ct-sidebar-brand" });
+    sidebarHeader.createDiv({ text: "NOTE WORKSPACE", cls: "ct-sidebar-subtitle" });
 
     const file = this.plugin.getTrackedFile();
     if (!(file instanceof TFile)) {
