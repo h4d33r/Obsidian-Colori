@@ -1,0 +1,32 @@
+name: Run Local Images patch
+
+on:
+  push:
+    branches:
+      - dev
+    paths:
+      - .github/run-local-images
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: dev
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: python .github/scripts/add_local_images.py
+      - run: node --check main.js
+      - run: |
+          git config user.name "H4d33r"
+          git config user.email "79756288+h4d33r@users.noreply.github.com"
+          git add main.js manifest.json versions.json
+          git diff --cached --check
+          git commit -m "feat: add local image localization"
+          git push origin dev
