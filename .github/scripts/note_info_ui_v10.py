@@ -158,6 +158,6 @@ versions = json.loads(versions_path.read_text(encoding='utf-8'))
 versions['1.4.5'] = '1.13.7'
 versions_path.write_text(json.dumps(versions, indent=2) + '\n', encoding='utf-8')
 
-for expected in ['countImageEmbeds(text)', 'text: "Images"', 'ct-ioc-breakdown', 'text: "Colori"', 'NOTE WORKSPACE']:
+for expected in ['countImageEmbeds(text)', 'addInfoRow("Images", images)', 'ct-ioc-breakdown', 'text: "Colori"', 'NOTE WORKSPACE']:
     if expected not in s:
         raise SystemExit(f'missing expected main.js output: {expected}')
