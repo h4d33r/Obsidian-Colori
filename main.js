@@ -22,8 +22,18 @@ const MAX_ICON_CODE_POINTS = 12;
 const MAX_PATH_LENGTH = 4096;
 const IOC_LIMITS = new Set([10, 25, 50, 100, 250]);
 const MAX_LOCAL_IMAGE_BYTES = 20 * 1024 * 1024;
-const MAX_REMOTE_IMAGES_PER_RUN = 200;
-const LOCAL_IMAGE_EXTENSIONS = new Set(["png", "jpg", "jpeg", "gif", "webp", "bmp", "avif", "ico"]);
+const MAX_REMOTE_IMAGES_PER_RUN = 50;
+const MAX_REMOTE_IMAGE_TOTAL_BYTES_PER_RUN = 100 * 1024 * 1024;
+const SAFE_REMOTE_IMAGE_MIME_TO_EXT = Object.freeze({
+  "image/png": "png",
+  "image/jpeg": "jpg",
+  "image/gif": "gif",
+  "image/webp": "webp",
+  "image/bmp": "bmp",
+  "image/avif": "avif",
+  "image/x-icon": "ico",
+  "image/vnd.microsoft.icon": "ico"
+});
 
 const DEFAULT_SETTINGS = Object.freeze({
   folderColor: "#f0a45d",
@@ -682,31 +692,64 @@ module.exports = class ColoriPlugin extends Plugin {
     return "";
   }
 
-  getLocalImageExtension(url, contentType) {
-    const mime = String(contentType || "").split(";", 1)[0].trim().toLowerCase();
-    const mimeMap = {
-      "image/png": "png",
-      "image/jpeg": "jpg",
-      "image/gif": "gif",
-      "image/webp": "webp",
-      "image/bmp": "bmp",
-      "image/avif": "avif",
-      "image/x-icon": "ico",
-      "image/vnd.microsoft.icon": "ico"
-    };
-    if (mimeMap[mime]) return mimeMap[mime];
-
+  validateRemoteImageUrl(rawUrl) {
     try {
-      const pathname = new URL(url).pathname;
-      const last = pathname.split("/").pop() || "";
-      const dot = last.lastIndexOf(".");
-      if (dot >= 0) {
-        let ext = last.slice(dot + 1).toLowerCase();
-        if (ext === "jpeg") ext = "jpg";
-        if (LOCAL_IMAGE_EXTENSIONS.has(ext)) return ext;
+      const parsed = new URL(String(rawUrl || "").trim());
+      if (parsed.protocol !== "https:") return { ok: false, reason: "Only HTTPS image URLs are allowed" };
+      if (parsed.username || parsed.password) return { ok: false, reason: "URLs containing credentials are blocked" };
+      if (parsed.port && parsed.port !== "443") return { ok: false, reason: "Non-standard HTTPS ports are blocked" };
+
+      const host = parsed.hostname.replace(/^\[|\]$/g, "").toLowerCase();
+      if (!host || host.length > 253) return { ok: false, reason: "Invalid hostname" };
+      if (host === "localhost" || host.endsWith(".localhost") || host.endsWith(".local") || host.endsWith(".lan") || host.endsWith(".internal") || host.endsWith(".home") || host.endsWith(".corp")) {
+        return { ok: false, reason: "Local/internal hostnames are blocked" };
       }
-    } catch (_) {}
-    return null;
+
+      // Do not allow literal IPv4/IPv6 destinations. This prevents obvious loopback,
+      // RFC1918, link-local, and cloud-metadata targets from note-controlled URLs.
+      if (/^(?:\d{1,3}\.){3}\d{1,3}$/.test(host) || host.includes(":")) {
+        return { ok: false, reason: "IP-literal image URLs are blocked" };
+      }
+
+      // Require a normal DNS-style public hostname. Punycode labels are fine.
+      if (!host.includes(".") || !/^[a-z0-9.-]+$/.test(host) || host.startsWith(".") || host.endsWith(".") || host.includes("..")) {
+        return { ok: false, reason: "Non-public-looking hostnames are blocked" };
+      }
+
+      return { ok: true, url: parsed.href, hostname: host };
+    } catch {
+      return { ok: false, reason: "Invalid image URL" };
+    }
+  }
+
+  getLocalImageExtension(contentType) {
+    const mime = String(contentType || "").split(";", 1)[0].trim().toLowerCase();
+    return SAFE_REMOTE_IMAGE_MIME_TO_EXT[mime] || null;
+  }
+
+  hasValidImageMagic(arrayBuffer, extension) {
+    if (!(arrayBuffer instanceof ArrayBuffer)) return false;
+    const bytes = new Uint8Array(arrayBuffer);
+    const ascii = (start, length) => {
+      if (bytes.length < start + length) return "";
+      return String.fromCharCode(...bytes.slice(start, start + length));
+    };
+
+    if (extension === "png") {
+      const sig = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+      return bytes.length >= sig.length && sig.every((value, index) => bytes[index] === value);
+    }
+    if (extension === "jpg") return bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
+    if (extension === "gif") return ascii(0, 6) === "GIF87a" || ascii(0, 6) === "GIF89a";
+    if (extension === "webp") return ascii(0, 4) === "RIFF" && ascii(8, 4) === "WEBP";
+    if (extension === "bmp") return ascii(0, 2) === "BM";
+    if (extension === "ico") return bytes.length >= 4 && bytes[0] === 0x00 && bytes[1] === 0x00 && bytes[2] === 0x01 && bytes[3] === 0x00;
+    if (extension === "avif") {
+      if (ascii(4, 4) !== "ftyp") return false;
+      const header = ascii(8, Math.min(32, Math.max(0, bytes.length - 8)));
+      return header.includes("avif") || header.includes("avis");
+    }
+    return false;
   }
 
   buildLocalImageFilename(url, extension) {
@@ -725,13 +768,20 @@ module.exports = class ColoriPlugin extends Plugin {
     return `${base}.${extension}`;
   }
 
-  async downloadRemoteImage(url, noteFile) {
+  async downloadRemoteImage(url, noteFile, remainingRunBytes = MAX_REMOTE_IMAGE_TOTAL_BYTES_PER_RUN) {
+    const checked = this.validateRemoteImageUrl(url);
+    if (!checked.ok) throw new Error(checked.reason || "Blocked image URL");
+    if (!(noteFile instanceof TFile) || noteFile.extension !== "md") throw new Error("Invalid destination note");
+
+    const effectiveLimit = Math.min(MAX_LOCAL_IMAGE_BYTES, Math.max(0, Number(remainingRunBytes) || 0));
+    if (effectiveLimit <= 0) throw new Error("Per-run download limit reached");
+
     let response;
     try {
       response = await requestUrl({
-        url,
+        url: checked.url,
         method: "GET",
-        headers: { Accept: "image/avif,image/webp,image/png,image/jpeg,image/gif,image/*;q=0.8" }
+        headers: { Accept: "image/avif,image/webp,image/png,image/jpeg,image/gif,image/bmp,image/x-icon;q=0.8" }
       });
     } catch (error) {
       throw new Error(`Download failed: ${error?.message || error}`);
@@ -742,19 +792,22 @@ module.exports = class ColoriPlugin extends Plugin {
     }
 
     const contentLength = Number(this.getResponseHeader(response.headers, "content-length"));
-    if (Number.isFinite(contentLength) && contentLength > MAX_LOCAL_IMAGE_BYTES) {
-      throw new Error("Image is larger than 20 MB");
+    if (Number.isFinite(contentLength) && contentLength > effectiveLimit) {
+      throw new Error(effectiveLimit < MAX_LOCAL_IMAGE_BYTES ? "Per-run download limit would be exceeded" : "Image is larger than 20 MB");
     }
+
+    const contentType = this.getResponseHeader(response.headers, "content-type");
+    const extension = this.getLocalImageExtension(contentType);
+    if (!extension) throw new Error("Server did not return a supported image MIME type");
 
     const data = response.arrayBuffer;
     if (!(data instanceof ArrayBuffer) || data.byteLength === 0) throw new Error("Empty image response");
-    if (data.byteLength > MAX_LOCAL_IMAGE_BYTES) throw new Error("Image is larger than 20 MB");
+    if (data.byteLength > effectiveLimit) {
+      throw new Error(effectiveLimit < MAX_LOCAL_IMAGE_BYTES ? "Per-run download limit would be exceeded" : "Image is larger than 20 MB");
+    }
+    if (!this.hasValidImageMagic(data, extension)) throw new Error("Downloaded bytes do not match the declared image type");
 
-    const contentType = this.getResponseHeader(response.headers, "content-type");
-    const extension = this.getLocalImageExtension(url, contentType);
-    if (!extension) throw new Error("Unsupported or unknown image type");
-
-    const filename = this.buildLocalImageFilename(url, extension);
+    const filename = this.buildLocalImageFilename(checked.url, extension);
     const attachmentPath = await this.app.fileManager.getAvailablePathForAttachment(filename, noteFile.path);
     await this.app.vault.createBinary(attachmentPath, data);
     const created = this.app.vault.getAbstractFileByPath(attachmentPath);
@@ -772,14 +825,52 @@ module.exports = class ColoriPlugin extends Plugin {
       return false;
     }
 
-    const embeds = allEmbeds.slice(0, MAX_REMOTE_IMAGES_PER_RUN);
+    const eligible = [];
+    const blocked = [];
+    for (const embed of allEmbeds) {
+      const checked = this.validateRemoteImageUrl(embed.url);
+      if (checked.ok) eligible.push({ ...embed, url: checked.url, hostname: checked.hostname });
+      else blocked.push({ ...embed, reason: checked.reason || "Blocked by security rules" });
+    }
+
+    if (!eligible.length) {
+      new Notice(`No eligible HTTPS images. ${blocked.length} remote image${blocked.length === 1 ? " was" : "s were"} blocked by security rules.`);
+      return false;
+    }
+
+    const hosts = [...new Set(eligible.map((item) => item.hostname))].sort();
+    const visibleHosts = hosts.slice(0, 8);
+    const hostLines = visibleHosts.map((host) => `• ${host}`);
+    if (hosts.length > visibleHosts.length) hostLines.push(`• …and ${hosts.length - visibleHosts.length} more host${hosts.length - visibleHosts.length === 1 ? "" : "s"}`);
+    const confirmation = [
+      `Colori will download ${eligible.length} image embed${eligible.length === 1 ? "" : "s"} from:`,
+      "",
+      ...hostLines,
+      "",
+      "Only continue if you trust these hosts. No download has started yet."
+    ].join("\n");
+    if (!window.confirm(confirmation)) {
+      new Notice("Image localization cancelled.");
+      return false;
+    }
+
+    const embeds = eligible.slice(0, MAX_REMOTE_IMAGES_PER_RUN);
     const downloaded = new Map();
     const failed = new Map();
+    let totalBytes = 0;
+    let totalLimitReached = false;
 
     for (const embed of embeds) {
       if (downloaded.has(embed.url) || failed.has(embed.url)) continue;
+      const remaining = MAX_REMOTE_IMAGE_TOTAL_BYTES_PER_RUN - totalBytes;
+      if (remaining <= 0) {
+        totalLimitReached = true;
+        break;
+      }
       try {
-        downloaded.set(embed.url, await this.downloadRemoteImage(embed.url, file));
+        const attachment = await this.downloadRemoteImage(embed.url, file, remaining);
+        downloaded.set(embed.url, attachment);
+        totalBytes += Math.max(0, Number(attachment.stat?.size) || 0);
       } catch (error) {
         failed.set(embed.url, error?.message || String(error));
         console.warn("Colori: remote image localization failed", embed.url, error);
@@ -802,10 +893,12 @@ module.exports = class ColoriPlugin extends Plugin {
       else await this.app.vault.modify(file, updated);
     }
 
-    const skipped = Math.max(0, allEmbeds.length - embeds.length);
+    const skippedForCount = Math.max(0, eligible.length - embeds.length);
     const parts = [`Localized ${localized} image${localized === 1 ? "" : "s"}.`];
-    if (failed.size) parts.push(`${failed.size} download${failed.size === 1 ? "" : "s"} failed.`);
-    if (skipped) parts.push(`${skipped} skipped because the per-run limit is ${MAX_REMOTE_IMAGES_PER_RUN}.`);
+    if (blocked.length) parts.push(`${blocked.length} unsafe/ineligible URL${blocked.length === 1 ? " was" : "s were"} blocked.`);
+    if (failed.size) parts.push(`${failed.size} download${failed.size === 1 ? "" : "s"} failed validation or download.`);
+    if (skippedForCount) parts.push(`${skippedForCount} skipped because the per-run limit is ${MAX_REMOTE_IMAGES_PER_RUN}.`);
+    if (totalLimitReached) parts.push("Stopped at the 100 MB per-run download limit.");
     new Notice(parts.join(" "));
     return localized > 0;
   }
@@ -1347,9 +1440,11 @@ class NoteToolsView extends ItemView {
 
     const localImagesBody = this.makeDropdown(container, "local-images", "Local Images");
     const remoteImages = this.plugin.getRemoteImageEmbeds(text);
-    localImagesBody.createEl("p", { text: `Remote images: ${remoteImages.length} · Total images: ${this.countImageEmbeds(text)}`, cls: "ct-muted" });
+    const eligibleRemoteImages = remoteImages.filter((item) => this.plugin.validateRemoteImageUrl(item.url).ok);
+    const blockedRemoteImages = remoteImages.length - eligibleRemoteImages.length;
+    localImagesBody.createEl("p", { text: `Eligible HTTPS images: ${eligibleRemoteImages.length} · Blocked: ${blockedRemoteImages} · Total images: ${this.countImageEmbeds(text)}`, cls: "ct-muted" });
     const localizeButton = localImagesBody.createEl("button", { text: "Localize remote images", cls: "ct-sidebar-wide-button" });
-    localizeButton.disabled = remoteImages.length === 0;
+    localizeButton.disabled = eligibleRemoteImages.length === 0;
     localizeButton.addEventListener("click", async () => {
       localizeButton.disabled = true;
       localizeButton.setText("Localizing…");
@@ -1357,7 +1452,7 @@ class NoteToolsView extends ItemView {
       this.openSections.add("local-images");
       await this.render();
     });
-    localImagesBody.createEl("p", { text: "Downloads HTTP/HTTPS image embeds into your Obsidian attachment folder and rewrites this note to the local copy. Normal links are not changed.", cls: "ct-muted" });
+    localImagesBody.createEl("p", { text: "Security-first: HTTPS only. You must confirm the source hosts before any network request. Downloads are MIME-checked, signature-checked, size-limited, and saved only through Obsidian’s attachment API.", cls: "ct-muted" });
 
     const iocBody = this.makeDropdown(container, "ioc", "IOC Scanner");
     const typeBox = iocBody.createDiv({ cls: "ct-ioc-type-grid" });
