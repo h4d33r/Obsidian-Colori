@@ -483,3 +483,22 @@ body.ct-safe-links .workspace-leaf-content[data-type="markdown"] .cm-url {
   min-width: 0;
   margin: 0;
 }
+
+
+/* Appearance scope v1.4.4 */
+.ct-appearance-scope-row {
+  display: grid;
+  grid-template-columns: 96px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  margin: 4px 0 8px;
+}
+.ct-appearance-scope-row select {
+  width: 100%;
+  min-width: 0;
+}
+.ct-appearance-source {
+  margin: 0 0 8px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}

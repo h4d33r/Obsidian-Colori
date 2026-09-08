@@ -209,7 +209,7 @@ function refangUrlText(value) {
 }
 
 function normalizeOverride(raw, settings) {
-  if (!raw || (raw.type !== "folder" && raw.type !== "file")) return null;
+  if (!raw || !["folder", "file", "folder-note"].includes(raw.type)) return null;
   const path = sanitizePath(raw.path);
   if (!path) return null;
   const fallbackColor = raw.type === "folder" ? settings.folderColor : settings.noteColor;
@@ -422,18 +422,62 @@ module.exports = class ColoriPlugin extends Plugin {
   renderOverrideCss() {
     if (!this.overrideStyleEl) return;
     const rules = [];
-    for (const override of this.settings.overrides) {
-      const path = escapeCssString(override.path);
-      const color = sanitizeColor(override.color, override.type === "folder" ? this.settings.folderColor : this.settings.noteColor);
-      const size = sanitizeSize(override.size, 10, 40, override.type === "folder" ? this.settings.folderSize : this.settings.noteSize);
+
+    const addRule = (selector, override, folderTitle = false) => {
+      const color = sanitizeColor(override.color, folderTitle ? this.settings.folderColor : this.settings.noteColor);
+      const size = sanitizeSize(override.size, 10, 40, folderTitle ? this.settings.folderSize : this.settings.noteSize);
       const icon = escapeCssString(sanitizeIcon(override.icon));
-      const selector = override.type === "folder"
-        ? `.nav-folder-title[data-path="${path}"] .nav-folder-title-content`
-        : `.nav-file-title[data-path="${path}"] .nav-file-title-content`;
       rules.push(`${selector}{color:${color}!important;font-size:${size}px!important;}`);
       rules.push(`${selector}::before{content:"${icon}";margin-right:${icon ? "0.4em" : "0"};}`);
+    };
+
+    for (const override of this.settings.overrides.filter((item) => item.type === "folder")) {
+      const path = escapeCssString(override.path);
+      addRule(`.nav-folder-title[data-path="${path}"] .nav-folder-title-content`, override, true);
     }
+
+    const folderNoteOverrides = this.settings.overrides
+      .filter((item) => item.type === "folder-note")
+      .sort((a, b) => a.path.split("/").length - b.path.split("/").length);
+    for (const override of folderNoteOverrides) {
+      const path = escapeCssString(override.path);
+      const selector = override.path === "/"
+        ? `.nav-file-title .nav-file-title-content`
+        : `.nav-file-title[data-path^="${path}/"] .nav-file-title-content`;
+      addRule(selector, override, false);
+    }
+
+    for (const override of this.settings.overrides.filter((item) => item.type === "file")) {
+      const path = escapeCssString(override.path);
+      addRule(`.nav-file-title[data-path="${path}"] .nav-file-title-content`, override, false);
+    }
+
     this.overrideStyleEl.textContent = rules.join("\n");
+  }
+
+  getFolderNoteOverride(folderPath, includeSelf = true) {
+    const safeFolder = sanitizePath(folderPath) || "/";
+    const matches = this.settings.overrides.filter((item) => {
+      if (item.type !== "folder-note") return false;
+      if (!includeSelf && item.path === safeFolder) return false;
+      if (item.path === "/") return true;
+      return safeFolder === item.path || safeFolder.startsWith(`${item.path}/`);
+    });
+    matches.sort((a, b) => b.path.length - a.path.length);
+    return matches[0] || null;
+  }
+
+  getEffectiveNoteOverride(path) {
+    const safePath = sanitizePath(path);
+    if (!safePath) return null;
+    return this.getOverride("file", safePath) || this.getFolderNoteOverride(parentPath(safePath), true);
+  }
+
+  getEffectiveNoteAppearance(path) {
+    const override = this.getEffectiveNoteOverride(path);
+    return override
+      ? { color: override.color, size: override.size, icon: override.icon || "", source: override }
+      : { color: this.settings.noteColor, size: this.settings.noteSize, icon: this.settings.noteIcon || "", source: null };
   }
 
   getOverride(type, path) {
@@ -442,7 +486,7 @@ module.exports = class ColoriPlugin extends Plugin {
 
   async upsertOverride(type, path, values) {
     const safePath = sanitizePath(path);
-    if ((type !== "folder" && type !== "file") || !safePath) return;
+    if (!["folder", "file", "folder-note"].includes(type) || !safePath) return;
     const fallbackColor = type === "folder" ? this.settings.folderColor : this.settings.noteColor;
     const fallbackSize = type === "folder" ? this.settings.folderSize : this.settings.noteSize;
     const safe = {
@@ -946,7 +990,7 @@ module.exports = class ColoriPlugin extends Plugin {
       for (const renderer of this.getGraphRenderers()) {
         for (const node of this.getGraphNodes(renderer)) {
           const path = this.getGraphNodePath(node);
-          const override = path ? this.getOverride("file", path) : null;
+          const override = path ? this.getEffectiveNoteOverride(path) : null;
           if (!override) continue;
           const color = graphColor(override.color);
           if (!color) continue;
@@ -1137,6 +1181,7 @@ class NoteToolsView extends ItemView {
     this.scanLimit = "all";
     this.scanResults = null;
     this.scanPath = null;
+    this.appearanceScope = "note";
   }
 
   getViewType() { return VIEW_TYPE; }
@@ -1324,14 +1369,55 @@ class NoteToolsView extends ItemView {
 
     const appearanceBody = this.makeDropdown(container, "appearance", "Appearance");
     appearanceBody.addClass("ct-appearance-body");
-    const existing = this.plugin.getOverride("file", file.path);
-    const appearance = existing ? { ...existing } : { color: this.plugin.settings.noteColor, size: this.plugin.settings.noteSize, icon: "" };
-    const appearanceGrid = appearanceBody.createDiv({ cls: "ct-appearance-grid" });
 
+    const folderPath = sanitizePath(file.parent?.path || "/") || "/";
+    const scopeRow = appearanceBody.createDiv({ cls: "ct-appearance-scope-row" });
+    scopeRow.createSpan({ text: "Apply to" });
+    const scopeSelect = scopeRow.createEl("select");
+    scopeSelect.createEl("option", { value: "note", text: "This note" });
+    scopeSelect.createEl("option", { value: "folder", text: "Current folder" });
+    scopeSelect.value = this.appearanceScope === "folder" ? "folder" : "note";
+    scopeSelect.addEventListener("change", async () => {
+      this.appearanceScope = scopeSelect.value === "folder" ? "folder" : "note";
+      this.openSections.add("appearance");
+      await this.render();
+    });
+
+    const scopeType = this.appearanceScope === "folder" ? "folder-note" : "file";
+    const targetPath = this.appearanceScope === "folder" ? folderPath : file.path;
+    const exact = this.plugin.getOverride(scopeType, targetPath);
+    const inherited = this.appearanceScope === "folder"
+      ? this.plugin.getFolderNoteOverride(folderPath, true)
+      : this.plugin.getEffectiveNoteOverride(file.path);
+    const appearance = inherited
+      ? { color: inherited.color, size: inherited.size, icon: inherited.icon || "" }
+      : { color: this.plugin.settings.noteColor, size: this.plugin.settings.noteSize, icon: this.plugin.settings.noteIcon || "" };
+
+    let sourceText;
+    if (this.appearanceScope === "note") {
+      if (exact) sourceText = "This note has its own appearance.";
+      else if (inherited?.type === "folder-note") sourceText = `Inherited from folder: ${inherited.path}`;
+      else sourceText = "Using global note appearance.";
+    } else {
+      if (exact) sourceText = "Applied to this folder and its subfolders.";
+      else {
+        const parentInherited = this.plugin.getFolderNoteOverride(folderPath, false);
+        sourceText = parentInherited ? `Inherited from parent folder: ${parentInherited.path}` : "Using global note appearance.";
+      }
+    }
+    appearanceBody.createDiv({ text: sourceText, cls: "ct-muted ct-appearance-source" });
+
+    const appearanceGrid = appearanceBody.createDiv({ cls: "ct-appearance-grid" });
     const makeAppearanceRow = (label) => {
       const row = appearanceGrid.createDiv({ cls: "ct-appearance-row" });
       row.createDiv({ text: label, cls: "ct-appearance-label" });
       return row.createDiv({ cls: "ct-appearance-control" });
+    };
+
+    const persistAppearance = async () => {
+      await this.plugin.upsertOverride(scopeType, targetPath, appearance);
+      this.openSections.add("appearance");
+      await this.render();
     };
 
     const colorControl = makeAppearanceRow("Title color");
@@ -1339,7 +1425,7 @@ class NoteToolsView extends ItemView {
     colorInput.value = sanitizeColor(appearance.color, this.plugin.settings.noteColor);
     colorInput.addEventListener("change", async () => {
       appearance.color = sanitizeColor(colorInput.value, this.plugin.settings.noteColor);
-      await this.plugin.upsertOverride("file", file.path, appearance);
+      await persistAppearance();
     });
 
     const sizeControl = makeAppearanceRow("Title size");
@@ -1349,13 +1435,10 @@ class NoteToolsView extends ItemView {
     sizeInput.max = "40";
     sizeInput.step = "1";
     sizeInput.value = String(appearance.size);
-    sizeInput.addEventListener("input", () => {
-      sizeValue.setText(sizeInput.value);
-    });
+    sizeInput.addEventListener("input", () => sizeValue.setText(sizeInput.value));
     sizeInput.addEventListener("change", async () => {
       appearance.size = sanitizeSize(sizeInput.value, 10, 40, this.plugin.settings.noteSize);
-      sizeValue.setText(String(appearance.size));
-      await this.plugin.upsertOverride("file", file.path, appearance);
+      await persistAppearance();
     });
 
     const iconControl = makeAppearanceRow("Icon");
@@ -1364,14 +1447,16 @@ class NoteToolsView extends ItemView {
     iconInput.value = appearance.icon || "";
     iconInput.addEventListener("change", async () => {
       appearance.icon = sanitizeIcon(iconInput.value);
-      iconInput.value = appearance.icon;
-      await this.plugin.upsertOverride("file", file.path, appearance);
+      await persistAppearance();
     });
 
-    if (existing) {
-      const reset = appearanceBody.createEl("button", { text: "Reset appearance", cls: "ct-sidebar-wide-button" });
+    if (exact) {
+      const reset = appearanceBody.createEl("button", {
+        text: this.appearanceScope === "folder" ? "Reset folder appearance" : "Reset note appearance",
+        cls: "ct-sidebar-wide-button"
+      });
       reset.addEventListener("click", async () => {
-        await this.plugin.removeOverride("file", file.path);
+        await this.plugin.removeOverride(scopeType, targetPath);
         this.openSections.add("appearance");
         await this.render();
       });
