@@ -623,17 +623,50 @@ module.exports = class ColoriPlugin extends Plugin {
     const source = typeof text === "string" ? text : "";
     const results = [];
 
-    const markdown = /!\[([^\]]*)\]\(\s*(https?:\/\/[^\s)]+)(?:\s+["'][^"']*["'])?\s*\)/gi;
+    const normalizeRemoteUrl = (rawValue) => {
+      let value = typeof rawValue === "string" ? rawValue.trim() : "";
+      if (!value) return "";
+
+      // Markdown permits destinations wrapped in angle brackets.
+      if (value.startsWith("<")) {
+        const close = value.indexOf(">");
+        if (close <= 1) return "";
+        value = value.slice(1, close).trim();
+      } else {
+        // Remove an optional Markdown link title after the destination.
+        const titled = value.match(/^(.*?)(?:\s+(?:"[^"]*"|'[^']*'|\([^)]*\)))\s*$/s);
+        if (titled && /^https?:\/\//i.test(titled[1].trim())) value = titled[1].trim();
+      }
+
+      // Be tolerant of a literal wrapped line inside a copied URL.
+      if (/^https?:\/\//i.test(value)) value = value.replace(/[\r\n\t]+/g, "");
+
+      try {
+        const parsed = new URL(value);
+        if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return "";
+        return value;
+      } catch {
+        return "";
+      }
+    };
+
+    // Parse the whole Markdown image destination first, then validate the URL.
+    // This deliberately mirrors the broad image detection used by Note Info.
+    const markdown = /!\[([^\]\r\n]{0,2048})\]\(\s*([\s\S]{1,4096}?)\s*\)/gi;
     let match;
     while ((match = markdown.exec(source))) {
-      results.push({ kind: "markdown", full: match[0], url: match[2], alt: match[1] || "" });
+      const url = normalizeRemoteUrl(match[2]);
+      if (url) results.push({ kind: "markdown", full: match[0], url, alt: match[1] || "" });
       if (match.index === markdown.lastIndex) markdown.lastIndex++;
     }
 
     const html = /<img\b[^>]*\bsrc\s*=\s*(["'])(https?:\/\/.*?)\1[^>]*>/gi;
     while ((match = html.exec(source))) {
-      const altMatch = match[0].match(/\balt\s*=\s*(["'])(.*?)\1/i);
-      results.push({ kind: "html", full: match[0], url: match[2], alt: altMatch ? altMatch[2] : "" });
+      const url = normalizeRemoteUrl(match[2]);
+      if (url) {
+        const altMatch = match[0].match(/\balt\s*=\s*(["'])(.*?)\1/i);
+        results.push({ kind: "html", full: match[0], url, alt: altMatch ? altMatch[2] : "" });
+      }
       if (match.index === html.lastIndex) html.lastIndex++;
     }
 
@@ -1314,7 +1347,7 @@ class NoteToolsView extends ItemView {
 
     const localImagesBody = this.makeDropdown(container, "local-images", "Local Images");
     const remoteImages = this.plugin.getRemoteImageEmbeds(text);
-    localImagesBody.createEl("p", { text: `Remote image embeds: ${remoteImages.length}`, cls: "ct-muted" });
+    localImagesBody.createEl("p", { text: `Remote images: ${remoteImages.length} · Total images: ${this.countImageEmbeds(text)}`, cls: "ct-muted" });
     const localizeButton = localImagesBody.createEl("button", { text: "Localize remote images", cls: "ct-sidebar-wide-button" });
     localizeButton.disabled = remoteImages.length === 0;
     localizeButton.addEventListener("click", async () => {

@@ -1,7 +1,7 @@
 {
   "id": "colori-dev",
   "name": "Colori Dev",
-  "version": "1.4.5",
+  "version": "1.4.6",
   "minAppVersion": "1.13.7",
   "description": "Development build with Note Tools, Safe Links, IOC scanning, local image localization, folder appearance inheritance, and note connections.",
   "author": "H4d33r",
