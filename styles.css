@@ -172,7 +172,6 @@ body:not([style*='--ct-note-icon: ""']) .nav-file-title-content::before { margin
 .ct-note-info-label { color: var(--text-muted); }
 .ct-note-info-value { text-align: right; overflow-wrap: anywhere; }
 
-
 body.ct-safe-links .workspace-leaf-content[data-type="markdown"] a[href^="http://"],
 body.ct-safe-links .workspace-leaf-content[data-type="markdown"] a[href^="https://"],
 body.ct-safe-links .workspace-leaf-content[data-type="markdown"] .external-link,
@@ -224,7 +223,6 @@ body.ct-safe-links .workspace-leaf-content[data-type="markdown"] .cm-url {
 .ct-ioc-limit-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 8px 0; }
 .ct-ioc-group-title { margin: 12px 0 5px; font-size: var(--font-ui-small); font-weight: 700; color: var(--text-muted); }
 
-
 /* Always-visible Note Info and Safe Links control */
 .ct-safe-links-row {
   display: flex;
@@ -258,4 +256,10 @@ body.ct-safe-links .workspace-leaf-content[data-type="markdown"] .cm-url {
 
 .ct-note-info-card .ct-note-info {
   grid-template-columns: minmax(90px, auto) minmax(0, 1fr);
+}
+
+/* Keep selected command/suggestion text readable on accent backgrounds. */
+.suggestion-item.is-selected,
+.suggestion-item.is-selected * {
+  color: var(--text-on-accent) !important;
 }
