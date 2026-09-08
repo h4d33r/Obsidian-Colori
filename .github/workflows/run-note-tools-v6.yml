@@ -21,7 +21,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - run: python .github/scripts/note_tools_v6.py
+      - run: python .github/scripts/note_tools_v6b.py
       - run: node --check main.js
       - run: |
           git config user.name "H4d33r"
