@@ -575,7 +575,7 @@ module.exports = class ColoriPlugin extends Plugin {
 
   scanIocs(text, type, limit) {
     const source = typeof text === "string" ? text : "";
-    const safeLimit = IOC_LIMITS.has(Number(limit)) ? Number(limit) : 25;
+    const safeLimit = limit === "all" ? Number.POSITIVE_INFINITY : (IOC_LIMITS.has(Number(limit)) ? Number(limit) : Number.POSITIVE_INFINITY);
     const wanted = ["all", "url", "ip", "domain", "hash", "email"].includes(type) ? type : "all";
     const results = [];
     const seen = new Set();
@@ -598,7 +598,7 @@ module.exports = class ColoriPlugin extends Plugin {
       }
     };
 
-    if (wanted === "all" || wanted === "url") run("URL", /\b(?:https?|hxxps?):\/\/[^\s<>"'`]+/gi);
+    if (wanted === "all" || wanted === "url") run("URL", /\b(?:https?|hxxps?):\/\/[^\s<>"'`\)]+/gi);
     if (wanted === "all" || wanted === "ip") run("IP", /\b(?:\d{1,3}\.){3}\d{1,3}\b/g, (value) => value.split(".").every((part) => Number(part) <= 255));
     if (wanted === "all" || wanted === "hash") run("Hash", /\b(?:[a-f0-9]{64}|[a-f0-9]{40}|[a-f0-9]{32})\b/gi);
     if (wanted === "all" || wanted === "email") run("Email", /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi);
@@ -606,7 +606,7 @@ module.exports = class ColoriPlugin extends Plugin {
       const normalized = value.replace(/\[\.\]/g, ".").toLowerCase();
       return !urlHosts.has(normalized);
     });
-    return results.slice(0, safeLimit);
+    return Number.isFinite(safeLimit) ? results.slice(0, safeLimit) : results;
   }
 
   countIocs(text) {
@@ -626,7 +626,7 @@ module.exports = class ColoriPlugin extends Plugin {
         if (match.index === regex.lastIndex) regex.lastIndex++;
       }
     };
-    countMatches("URL", /\b(?:https?|hxxps?):\/\/[^\s<>"'`]+/gi);
+    countMatches("URL", /\b(?:https?|hxxps?):\/\/[^\s<>"'`\)]+/gi);
     countMatches("IP", /\b(?:\d{1,3}\.){3}\d{1,3}\b/g, (value) => value.split(".").every((part) => Number(part) <= 255));
     countMatches("Hash", /\b(?:[a-f0-9]{64}|[a-f0-9]{40}|[a-f0-9]{32})\b/gi);
     countMatches("Email", /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi);
@@ -636,6 +636,88 @@ module.exports = class ColoriPlugin extends Plugin {
     });
     counts.Total = counts.URL + counts.IP + counts.Domain + counts.Hash + counts.Email;
     return counts;
+  }
+
+
+  getNoteTags(file) {
+    const cache = file instanceof TFile ? this.app.metadataCache.getFileCache(file) : null;
+    const tags = new Set();
+    const add = (value) => {
+      if (typeof value !== "string") return;
+      for (const part of value.split(/[\s,]+/)) {
+        const clean = part.trim().replace(/^#/, "").toLowerCase();
+        if (clean) tags.add(clean);
+      }
+    };
+    for (const tag of cache?.tags || []) add(tag?.tag || "");
+    const frontmatterTags = cache?.frontmatter?.tags;
+    if (Array.isArray(frontmatterTags)) for (const tag of frontmatterTags) add(String(tag));
+    else add(frontmatterTags);
+    return tags;
+  }
+
+  getRelationTerms(file) {
+    if (!(file instanceof TFile)) return new Set();
+    const stop = new Set(["the", "and", "for", "with", "from", "this", "that", "into", "note", "notes", "level", "module", "lesson"]);
+    const cache = this.app.metadataCache.getFileCache(file);
+    const text = [file.basename, ...(cache?.headings || []).map((item) => item.heading || "")].join(" ").toLowerCase();
+    return new Set((text.match(/[a-z0-9][a-z0-9_-]{2,}/g) || []).filter((term) => !stop.has(term)));
+  }
+
+  getRelatedNotes(file, limit = 10) {
+    if (!(file instanceof TFile)) return [];
+    const resolved = this.app.metadataCache.resolvedLinks || {};
+    const sourceLinks = new Set(Object.keys(resolved[file.path] || {}));
+    const sourceTags = this.getNoteTags(file);
+    const sourceTerms = this.getRelationTerms(file);
+    const manual = new Set();
+    for (const item of this.settings.connections) {
+      if (item.source === file.path) manual.add(item.target);
+      if (item.target === file.path) manual.add(item.source);
+    }
+
+    const related = [];
+    for (const candidate of this.app.vault.getMarkdownFiles()) {
+      if (candidate.path === file.path) continue;
+      let score = 0;
+      const reasons = [];
+      const candidateLinks = new Set(Object.keys(resolved[candidate.path] || {}));
+
+      if (manual.has(candidate.path)) { score += 100; reasons.push("Manual connection"); }
+      if (sourceLinks.has(candidate.path)) { score += 70; reasons.push("Linked from this note"); }
+      if (candidateLinks.has(file.path)) { score += 70; reasons.push("Links to this note"); }
+
+      const candidateTags = this.getNoteTags(candidate);
+      const sharedTags = [...sourceTags].filter((tag) => candidateTags.has(tag));
+      if (sharedTags.length) {
+        score += Math.min(sharedTags.length, 5) * 15;
+        reasons.push(`${sharedTags.length} shared tag${sharedTags.length === 1 ? "" : "s"}`);
+      }
+
+      const sharedTargets = [...sourceLinks].filter((path) => candidateLinks.has(path));
+      if (sharedTargets.length) {
+        score += Math.min(sharedTargets.length, 5) * 6;
+        reasons.push(`${sharedTargets.length} shared link${sharedTargets.length === 1 ? "" : "s"}`);
+      }
+
+      const candidateTerms = this.getRelationTerms(candidate);
+      const sharedTerms = [...sourceTerms].filter((term) => candidateTerms.has(term));
+      if (sharedTerms.length) {
+        score += Math.min(sharedTerms.length, 5) * 4;
+        reasons.push(`${sharedTerms.length} shared topic term${sharedTerms.length === 1 ? "" : "s"}`);
+      }
+
+      if (file.parent?.path && candidate.parent?.path === file.parent.path) {
+        score += 3;
+        reasons.push("Same folder");
+      }
+
+      if (score > 0) related.push({ file: candidate, score, reasons });
+    }
+
+    return related
+      .sort((a, b) => b.score - a.score || a.file.basename.localeCompare(b.file.basename))
+      .slice(0, Math.max(1, Math.min(25, Number(limit) || 10)));
   }
 
   async openSidebar() {
@@ -879,7 +961,7 @@ class NoteToolsView extends ItemView {
     this.plugin = plugin;
     this.openSections = new Set();
     this.scanTypes = new Set(["url", "ip", "domain", "hash", "email"]);
-    this.scanLimit = 25;
+    this.scanLimit = "all";
     this.scanResults = null;
     this.scanPath = null;
   }
@@ -904,6 +986,29 @@ class NoteToolsView extends ItemView {
   async readTrackedText(file) {
     const editor = this.plugin.getEditorForFile(file);
     return editor ? editor.getValue() : this.app.vault.cachedRead(file);
+  }
+
+
+  renderNoteInfo(parent, file, text, counts) {
+    const infoCard = parent.createDiv({ cls: "ct-note-info-card" });
+    infoCard.createEl("div", { text: "Note Info", cls: "ct-note-info-title" });
+    const infoGrid = infoCard.createDiv({ cls: "ct-note-info" });
+    const words = (text.match(/\S+/g) || []).length;
+    const lines = text ? text.split(/\r?\n/).length : 0;
+    const size = file.stat.size < 1024 ? `${file.stat.size} B` : `${(file.stat.size / 1024).toFixed(1)} KB`;
+    const infoRows = [
+      ["Total IOCs", counts.Total],
+      ["IOC breakdown", `URL ${counts.URL} · IP ${counts.IP} · Domain ${counts.Domain} · Hash ${counts.Hash} · Email ${counts.Email}`],
+      ["Words", words],
+      ["Lines", lines],
+      ["File size", size],
+      ["Created", new Date(file.stat.ctime).toLocaleString()],
+      ["Modified", new Date(file.stat.mtime).toLocaleString()]
+    ];
+    for (const [name, value] of infoRows) {
+      infoGrid.createEl("span", { text: name, cls: "ct-note-info-label" });
+      infoGrid.createEl("span", { text: String(value), cls: "ct-note-info-value" });
+    }
   }
 
   async render() {
@@ -945,26 +1050,6 @@ class NoteToolsView extends ItemView {
       await this.render();
     });
 
-    const infoCard = container.createDiv({ cls: "ct-note-info-card" });
-    infoCard.createEl("div", { text: "Note Info", cls: "ct-note-info-title" });
-    const infoGrid = infoCard.createDiv({ cls: "ct-note-info" });
-    const words = (text.match(/\S+/g) || []).length;
-    const lines = text ? text.split(/\r?\n/).length : 0;
-    const size = file.stat.size < 1024 ? `${file.stat.size} B` : `${(file.stat.size / 1024).toFixed(1)} KB`;
-    const infoRows = [
-      ["Total IOCs", counts.Total],
-      ["IOC breakdown", `URL ${counts.URL} · IP ${counts.IP} · Domain ${counts.Domain} · Hash ${counts.Hash} · Email ${counts.Email}`],
-      ["Words", words],
-      ["Lines", lines],
-      ["File size", size],
-      ["Created", new Date(file.stat.ctime).toLocaleString()],
-      ["Modified", new Date(file.stat.mtime).toLocaleString()]
-    ];
-    for (const [name, value] of infoRows) {
-      infoGrid.createEl("span", { text: name, cls: "ct-note-info-label" });
-      infoGrid.createEl("span", { text: String(value), cls: "ct-note-info-value" });
-    }
-
     const defangBody = this.makeDropdown(container, "defang", "Defang / Refang");
     const transformActions = defangBody.createDiv({ cls: "ct-sidebar-actions" });
     const defang = transformActions.createEl("button", { text: "Defang" });
@@ -992,11 +1077,14 @@ class NoteToolsView extends ItemView {
     const limitRow = iocBody.createDiv({ cls: "ct-ioc-limit-row" });
     limitRow.createSpan({ text: "Maximum results" });
     const limitSelect = limitRow.createEl("select");
-    for (const limit of [10, 25, 50, 100, 250]) {
-      const option = limitSelect.createEl("option", { value: String(limit), text: String(limit) });
-      if (limit === this.scanLimit) option.selected = true;
+    for (const [value, label] of [["all", "All"], ["10", "10"], ["25", "25"], ["50", "50"], ["100", "100"], ["250", "250"]]) {
+      const option = limitSelect.createEl("option", { value, text: label });
+      if (String(this.scanLimit) === value) option.selected = true;
     }
-    limitSelect.addEventListener("change", () => { this.scanLimit = Number(limitSelect.value); this.scanResults = null; });
+    limitSelect.addEventListener("change", () => {
+      this.scanLimit = limitSelect.value === "all" ? "all" : Number(limitSelect.value);
+      this.scanResults = null;
+    });
 
     const scanButton = iocBody.createEl("button", { text: "Scan current note", cls: "ct-sidebar-wide-button" });
     scanButton.addEventListener("click", async () => {
@@ -1005,11 +1093,13 @@ class NoteToolsView extends ItemView {
       if (!(currentFile instanceof TFile)) return;
       const currentText = await this.readTrackedText(currentFile);
       const all = [];
+      const numericLimit = this.scanLimit === "all" ? Number.POSITIVE_INFINITY : Number(this.scanLimit);
       for (const type of this.scanTypes) {
-        if (all.length >= this.scanLimit) break;
-        all.push(...this.plugin.scanIocs(currentText, type, this.scanLimit - all.length));
+        if (Number.isFinite(numericLimit) && all.length >= numericLimit) break;
+        const remaining = Number.isFinite(numericLimit) ? Math.max(0, numericLimit - all.length) : "all";
+        all.push(...this.plugin.scanIocs(currentText, type, remaining));
       }
-      this.scanResults = all.slice(0, this.scanLimit);
+      this.scanResults = Number.isFinite(numericLimit) ? all.slice(0, numericLimit) : all;
       this.scanPath = currentFile.path;
       this.openSections.add("ioc");
       await this.render();
@@ -1021,42 +1111,74 @@ class NoteToolsView extends ItemView {
         if (!grouped.has(item.type)) grouped.set(item.type, []);
         grouped.get(item.type).push(item.value);
       }
+      const labels = { URL: "URLs", IP: "IPs", Domain: "Domains", Hash: "Hashes", Email: "Emails" };
       const resultBox = iocBody.createDiv({ cls: "ct-ioc-results" });
-      resultBox.createEl("div", { text: `${this.scanResults.length} shown`, cls: "ct-muted" });
+      resultBox.createEl("div", { text: `${this.scanResults.length} found`, cls: "ct-ioc-result-count" });
       for (const [type, values] of grouped.entries()) {
-        resultBox.createEl("div", { text: `${type}${values.length === 1 ? "" : "s"}`, cls: "ct-ioc-group-title" });
-        for (const value of values) {
-          const row = resultBox.createDiv({ cls: "ct-ioc-row" });
-          row.createEl("code", { text: value });
-          const copy = row.createEl("button", { text: "Copy" });
-          copy.addEventListener("click", () => navigator.clipboard.writeText(value));
-        }
-      }
-      if (this.scanResults.length) {
-        const copyAll = iocBody.createEl("button", { text: "Copy shown results", cls: "ct-sidebar-wide-button" });
-        copyAll.addEventListener("click", () => navigator.clipboard.writeText(this.scanResults.map((item) => item.value).join("\n")));
+        const group = resultBox.createEl("details", { cls: "ct-ioc-result-group" });
+        const summary = group.createEl("summary");
+        summary.createSpan({ text: `${labels[type] || type} (${values.length})`, cls: "ct-ioc-group-title" });
+        const body = group.createDiv({ cls: "ct-ioc-group-body" });
+        let rendered = false;
+        const renderValues = () => {
+          if (rendered) return;
+          rendered = true;
+          for (const value of values) {
+            const row = body.createDiv({ cls: "ct-ioc-row" });
+            row.createEl("code", { text: value, cls: "ct-ioc-code" });
+            const copy = row.createEl("button", { text: "Copy", cls: "ct-ioc-copy" });
+            copy.setAttribute("aria-label", `Copy ${type}`);
+            copy.addEventListener("click", () => navigator.clipboard.writeText(value));
+          }
+        };
+        group.addEventListener("toggle", () => { if (group.open) renderValues(); });
       }
     }
 
     const appearanceBody = this.makeDropdown(container, "appearance", "Appearance");
+    appearanceBody.addClass("ct-appearance-body");
     const existing = this.plugin.getOverride("file", file.path);
     const appearance = existing ? { ...existing } : { color: this.plugin.settings.noteColor, size: this.plugin.settings.noteSize, icon: "" };
-    new Setting(appearanceBody).setName("Title color").addColorPicker((picker) => picker.setValue(appearance.color).onChange(async (value) => { appearance.color = sanitizeColor(value, this.plugin.settings.noteColor); await this.plugin.upsertOverride("file", file.path, appearance); }));
-    new Setting(appearanceBody).setName("Title size").addSlider((slider) => slider.setLimits(10, 40, 1).setValue(appearance.size).setDynamicTooltip().onChange(async (value) => { appearance.size = sanitizeSize(value, 10, 40, this.plugin.settings.noteSize); await this.plugin.upsertOverride("file", file.path, appearance); }));
-    new Setting(appearanceBody).setName("Icon").addText((input) => input.setPlaceholder("Optional").setValue(appearance.icon || "").onChange(async (value) => { appearance.icon = sanitizeIcon(value); await this.plugin.upsertOverride("file", file.path, appearance); }));
+    const colorSetting = new Setting(appearanceBody).setName("Title color").addColorPicker((picker) => picker.setValue(appearance.color).onChange(async (value) => { appearance.color = sanitizeColor(value, this.plugin.settings.noteColor); await this.plugin.upsertOverride("file", file.path, appearance); }));
+    colorSetting.settingEl.addClass("ct-appearance-setting");
+    const sizeSetting = new Setting(appearanceBody).setName("Title size").addSlider((slider) => slider.setLimits(10, 40, 1).setValue(appearance.size).setDynamicTooltip().onChange(async (value) => { appearance.size = sanitizeSize(value, 10, 40, this.plugin.settings.noteSize); await this.plugin.upsertOverride("file", file.path, appearance); }));
+    sizeSetting.settingEl.addClass("ct-appearance-setting");
+    const iconSetting = new Setting(appearanceBody).setName("Icon").addText((input) => input.setPlaceholder("Optional").setValue(appearance.icon || "").onChange(async (value) => { appearance.icon = sanitizeIcon(value); await this.plugin.upsertOverride("file", file.path, appearance); }));
+    iconSetting.settingEl.addClass("ct-appearance-setting");
     if (existing) {
       const reset = appearanceBody.createEl("button", { text: "Reset appearance", cls: "ct-sidebar-wide-button" });
       reset.addEventListener("click", async () => { await this.plugin.removeOverride("file", file.path); this.openSections.add("appearance"); await this.render(); });
     }
 
-    const graphBody = this.makeDropdown(container, "graph", "Graph");
+    const graphBody = this.makeDropdown(container, "graph", "Connections");
     const count = this.plugin.getOutgoingConnections(file.path).length;
     const graphActions = graphBody.createDiv({ cls: "ct-sidebar-actions" });
-    const connect = graphActions.createEl("button", { text: "Connect note" });
+    const connect = graphActions.createEl("button", { text: "Add manual" });
     connect.addEventListener("click", () => new NoteSuggestModal(this.app, file.path, async (target) => { await this.plugin.addConnection(file, target); this.openSections.add("graph"); await this.render(); }).open());
-    const manage = graphActions.createEl("button", { text: `Connections (${count})` });
+    const manage = graphActions.createEl("button", { text: `Manual (${count})` });
     manage.addEventListener("click", () => new ConnectionsModal(this.app, this.plugin, file).open());
-    graphBody.createEl("p", { text: this.plugin.settings.graphMatchNoteColors ? "Graph color matching is enabled globally." : "Graph color matching is disabled globally.", cls: "ct-muted" });
+
+    graphBody.createEl("div", { text: "Related Notes", cls: "ct-related-heading" });
+    graphBody.createEl("p", { text: "Local relationship ranking from links, backlinks, tags, headings, folder proximity, and manual connections.", cls: "ct-muted ct-related-help" });
+    const related = this.plugin.getRelatedNotes(file, 10);
+    const relatedBox = graphBody.createDiv({ cls: "ct-related-list" });
+    if (!related.length) {
+      relatedBox.createEl("div", { text: "No related notes found yet.", cls: "ct-muted" });
+    }
+    for (const item of related) {
+      const card = relatedBox.createEl("details", { cls: "ct-related-note" });
+      const summary = card.createEl("summary");
+      summary.createSpan({ text: item.file.basename, cls: "ct-related-note-name" });
+      summary.createSpan({ text: `${item.reasons.length} signal${item.reasons.length === 1 ? "" : "s"}`, cls: "ct-related-note-signal" });
+      const body = card.createDiv({ cls: "ct-related-note-body" });
+      body.createEl("div", { text: item.file.path, cls: "ct-related-note-path" });
+      body.createEl("div", { text: item.reasons.join(" · "), cls: "ct-related-note-reasons" });
+      const open = body.createEl("button", { text: "Open note", cls: "ct-sidebar-wide-button" });
+      open.addEventListener("click", async () => { await this.app.workspace.getLeaf(false).openFile(item.file); });
+    }
+    graphBody.createEl("p", { text: this.plugin.settings.graphMatchNoteColors ? "Graph color matching: ON" : "Graph color matching: OFF", cls: "ct-muted ct-graph-state" });
+
+    this.renderNoteInfo(container, file, text, counts);
 
   }
 }
