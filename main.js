@@ -323,6 +323,34 @@ module.exports = class ColoriPlugin extends Plugin {
       editorCallback: (editor, view) => this.transformEditor(editor, view?.file, "refang")
     });
 
+    this.addCommand({
+      id: "connect-current-note",
+      name: "Connect current note…",
+      callback: () => {
+        const file = this.getTrackedFile();
+        if (!(file instanceof TFile)) { new Notice("Open a Markdown note first."); return; }
+        new NoteSuggestModal(this.app, file.path, async (target) => {
+          await this.addConnection(file, target);
+          new Notice(`Connected to ${target.basename}.`);
+          this.refreshSidebar();
+        }).open();
+      }
+    });
+
+    this.registerEvent(this.app.workspace.on("file-menu", (menu, file) => {
+      if (!(file instanceof TFile) || file.extension !== "md") return;
+      menu.addItem((item) => item
+        .setTitle("Colori: Connect note…")
+        .setIcon("link")
+        .onClick(() => {
+          new NoteSuggestModal(this.app, file.path, async (target) => {
+            await this.addConnection(file, target);
+            new Notice(`Connected ${file.basename} to ${target.basename}.`);
+            this.refreshSidebar();
+          }).open();
+        }));
+    }));
+
     const rememberMarkdown = () => {
       const view = this.app.workspace.getActiveViewOfType(MarkdownView);
       if (!(view?.file instanceof TFile)) return;
