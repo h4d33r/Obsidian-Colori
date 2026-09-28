@@ -8,33 +8,15 @@ const {
   Notice,
   TFile,
   TFolder,
-  normalizePath,
-  requestUrl
 } = require("obsidian");
 
 const VIEW_TYPE = "colori-note-tools";
-const HUB_START = "<!-- colori-folder-hub:start -->";
-const HUB_END = "<!-- colori-folder-hub:end -->";
 const CONNECTIONS_START = "<!-- colori-connections:start -->";
 const CONNECTIONS_END = "<!-- colori-connections:end -->";
 const HEX_COLOR_RE = /^#[0-9a-fA-F]{6}$/;
 const MAX_ICON_CODE_POINTS = 12;
 const MAX_PATH_LENGTH = 4096;
 const IOC_LIMITS = new Set([10, 25, 50, 100, 250]);
-const MAX_LOCAL_IMAGE_BYTES = 20 * 1024 * 1024;
-const MAX_REMOTE_IMAGES_PER_RUN = 50;
-const MAX_REMOTE_IMAGE_TOTAL_BYTES_PER_RUN = 100 * 1024 * 1024;
-const SAFE_REMOTE_IMAGE_MIME_TO_EXT = Object.freeze({
-  "image/png": "png",
-  "image/jpeg": "jpg",
-  "image/gif": "gif",
-  "image/webp": "webp",
-  "image/bmp": "bmp",
-  "image/avif": "avif",
-  "image/x-icon": "ico",
-  "image/vnd.microsoft.icon": "ico"
-});
-
 const DEFAULT_SETTINGS = Object.freeze({
   folderColor: "#f0a45d",
   folderSize: 14,
@@ -61,7 +43,6 @@ const DEFAULT_SETTINGS = Object.freeze({
   safeLinksEnabled: true,
   graphMatchNoteColors: false,
   overrides: [],
-  folderHubs: [],
   connections: []
 });
 
@@ -243,7 +224,7 @@ function normalizeConnection(raw) {
 
 function normalizeSettings(raw) {
   const source = raw && typeof raw === "object" ? raw : {};
-  const result = { ...DEFAULT_SETTINGS, overrides: [], folderHubs: [], connections: [] };
+  const result = { ...DEFAULT_SETTINGS, overrides: [], connections: [] };
 
   for (const [key] of Object.entries(CSS_VARIABLES)) {
     if (key.endsWith("Color")) result[key] = sanitizeColor(source[key], DEFAULT_SETTINGS[key]);
@@ -267,16 +248,6 @@ function normalizeSettings(raw) {
       if (seen.has(key)) continue;
       seen.add(key);
       result.overrides.push(override);
-    }
-  }
-
-  if (Array.isArray(source.folderHubs)) {
-    const seen = new Set();
-    for (const rawPath of source.folderHubs) {
-      const path = sanitizePath(rawPath);
-      if (!path || path === "/" || seen.has(path)) continue;
-      seen.add(path);
-      result.folderHubs.push(path);
     }
   }
 
@@ -351,16 +322,6 @@ module.exports = class ColoriPlugin extends Plugin {
       name: "Refang selection or current note",
       editorCallback: (editor, view) => this.transformEditor(editor, view?.file, "refang")
     });
-    this.addCommand({
-      id: "localize-remote-images-current-note",
-      name: "Localize remote images in current note",
-      callback: async () => {
-        const file = this.getTrackedFile();
-        if (!(file instanceof TFile)) { new Notice("Open a Markdown note first."); return; }
-        await this.localizeRemoteImages(file);
-        this.refreshSidebar();
-      }
-    });
 
     const rememberMarkdown = () => {
       const view = this.app.workspace.getActiveViewOfType(MarkdownView);
@@ -382,7 +343,6 @@ module.exports = class ColoriPlugin extends Plugin {
       if (this.settings.graphMatchNoteColors) this.applyGraphNodeColors();
     }, 750));
 
-    this.registerEvent(this.app.vault.on("create", (file) => this.handleCreate(file)));
     this.registerEvent(this.app.vault.on("rename", (file, oldPath) => this.handleRename(file, oldPath)));
     this.registerEvent(this.app.vault.on("delete", (file) => this.handleDelete(file)));
   }
@@ -415,7 +375,6 @@ module.exports = class ColoriPlugin extends Plugin {
     root.style.setProperty("--ct-note-icon", `"${escapeCssString(this.settings.noteIcon)}"`);
     root.style.setProperty("--graph-node", this.settings.noteColor);
     root.style.setProperty("--graph-node-focused", this.settings.activeNoteColor);
-    root.classList.toggle("ct-safe-links", this.settings.safeLinksEnabled);
     this.renderOverrideCss();
   }
 
@@ -426,7 +385,6 @@ module.exports = class ColoriPlugin extends Plugin {
     for (const name of ["--ct-folder-icon", "--ct-note-icon", "--graph-node", "--graph-node-focused"]) {
       root.style.removeProperty(name);
     }
-    root.classList.remove("ct-safe-links");
   }
 
   renderOverrideCss() {
@@ -628,280 +586,6 @@ module.exports = class ColoriPlugin extends Plugin {
     return true;
   }
 
-
-  getRemoteImageEmbeds(text) {
-    const source = typeof text === "string" ? text : "";
-    const results = [];
-
-    const normalizeRemoteUrl = (rawValue) => {
-      let value = typeof rawValue === "string" ? rawValue.trim() : "";
-      if (!value) return "";
-
-      // Markdown permits destinations wrapped in angle brackets.
-      if (value.startsWith("<")) {
-        const close = value.indexOf(">");
-        if (close <= 1) return "";
-        value = value.slice(1, close).trim();
-      } else {
-        // Remove an optional Markdown link title after the destination.
-        const titled = value.match(/^(.*?)(?:\s+(?:"[^"]*"|'[^']*'|\([^)]*\)))\s*$/s);
-        if (titled && /^https?:\/\//i.test(titled[1].trim())) value = titled[1].trim();
-      }
-
-      // Be tolerant of a literal wrapped line inside a copied URL.
-      if (/^https?:\/\//i.test(value)) value = value.replace(/[\r\n\t]+/g, "");
-
-      try {
-        const parsed = new URL(value);
-        if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return "";
-        return value;
-      } catch {
-        return "";
-      }
-    };
-
-    // Parse the whole Markdown image destination first, then validate the URL.
-    // This deliberately mirrors the broad image detection used by Note Info.
-    const markdown = /!\[([^\]\r\n]{0,2048})\]\(\s*([\s\S]{1,4096}?)\s*\)/gi;
-    let match;
-    while ((match = markdown.exec(source))) {
-      const url = normalizeRemoteUrl(match[2]);
-      if (url) results.push({ kind: "markdown", full: match[0], url, alt: match[1] || "" });
-      if (match.index === markdown.lastIndex) markdown.lastIndex++;
-    }
-
-    const html = /<img\b[^>]*\bsrc\s*=\s*(["'])(https?:\/\/.*?)\1[^>]*>/gi;
-    while ((match = html.exec(source))) {
-      const url = normalizeRemoteUrl(match[2]);
-      if (url) {
-        const altMatch = match[0].match(/\balt\s*=\s*(["'])(.*?)\1/i);
-        results.push({ kind: "html", full: match[0], url, alt: altMatch ? altMatch[2] : "" });
-      }
-      if (match.index === html.lastIndex) html.lastIndex++;
-    }
-
-    return results;
-  }
-
-  getResponseHeader(headers, name) {
-    if (!headers || typeof headers !== "object") return "";
-    const wanted = String(name).toLowerCase();
-    for (const [key, value] of Object.entries(headers)) {
-      if (String(key).toLowerCase() === wanted) return String(value || "");
-    }
-    return "";
-  }
-
-  validateRemoteImageUrl(rawUrl) {
-    try {
-      const parsed = new URL(String(rawUrl || "").trim());
-      if (parsed.protocol !== "https:") return { ok: false, reason: "Only HTTPS image URLs are allowed" };
-      if (parsed.username || parsed.password) return { ok: false, reason: "URLs containing credentials are blocked" };
-      if (parsed.port && parsed.port !== "443") return { ok: false, reason: "Non-standard HTTPS ports are blocked" };
-
-      const host = parsed.hostname.replace(/^\[|\]$/g, "").toLowerCase();
-      if (!host || host.length > 253) return { ok: false, reason: "Invalid hostname" };
-      if (host === "localhost" || host.endsWith(".localhost") || host.endsWith(".local") || host.endsWith(".lan") || host.endsWith(".internal") || host.endsWith(".home") || host.endsWith(".corp")) {
-        return { ok: false, reason: "Local/internal hostnames are blocked" };
-      }
-
-      // Do not allow literal IPv4/IPv6 destinations. This prevents obvious loopback,
-      // RFC1918, link-local, and cloud-metadata targets from note-controlled URLs.
-      if (/^(?:\d{1,3}\.){3}\d{1,3}$/.test(host) || host.includes(":")) {
-        return { ok: false, reason: "IP-literal image URLs are blocked" };
-      }
-
-      // Require a normal DNS-style public hostname. Punycode labels are fine.
-      if (!host.includes(".") || !/^[a-z0-9.-]+$/.test(host) || host.startsWith(".") || host.endsWith(".") || host.includes("..")) {
-        return { ok: false, reason: "Non-public-looking hostnames are blocked" };
-      }
-
-      return { ok: true, url: parsed.href, hostname: host };
-    } catch {
-      return { ok: false, reason: "Invalid image URL" };
-    }
-  }
-
-  getLocalImageExtension(contentType) {
-    const mime = String(contentType || "").split(";", 1)[0].trim().toLowerCase();
-    return SAFE_REMOTE_IMAGE_MIME_TO_EXT[mime] || null;
-  }
-
-  hasValidImageMagic(arrayBuffer, extension) {
-    if (!(arrayBuffer instanceof ArrayBuffer)) return false;
-    const bytes = new Uint8Array(arrayBuffer);
-    const ascii = (start, length) => {
-      if (bytes.length < start + length) return "";
-      return String.fromCharCode(...bytes.slice(start, start + length));
-    };
-
-    if (extension === "png") {
-      const sig = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
-      return bytes.length >= sig.length && sig.every((value, index) => bytes[index] === value);
-    }
-    if (extension === "jpg") return bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
-    if (extension === "gif") return ascii(0, 6) === "GIF87a" || ascii(0, 6) === "GIF89a";
-    if (extension === "webp") return ascii(0, 4) === "RIFF" && ascii(8, 4) === "WEBP";
-    if (extension === "bmp") return ascii(0, 2) === "BM";
-    if (extension === "ico") return bytes.length >= 4 && bytes[0] === 0x00 && bytes[1] === 0x00 && bytes[2] === 0x01 && bytes[3] === 0x00;
-    if (extension === "avif") {
-      if (ascii(4, 4) !== "ftyp") return false;
-      const header = ascii(8, Math.min(32, Math.max(0, bytes.length - 8)));
-      return header.includes("avif") || header.includes("avis");
-    }
-    return false;
-  }
-
-  buildLocalImageFilename(url, extension) {
-    let base = "remote-image";
-    try {
-      const pathname = decodeURIComponent(new URL(url).pathname);
-      const last = pathname.split("/").filter(Boolean).pop() || "remote-image";
-      base = last.replace(/\.[^.]+$/, "") || "remote-image";
-    } catch (_) {}
-    base = base
-      .replace(/[\\/:*?"<>|\u0000-\u001f]/g, "-")
-      .replace(/\s+/g, "-")
-      .replace(/-+/g, "-")
-      .replace(/^[.-]+|[.-]+$/g, "")
-      .slice(0, 80) || "remote-image";
-    return `${base}.${extension}`;
-  }
-
-  async downloadRemoteImage(url, noteFile, remainingRunBytes = MAX_REMOTE_IMAGE_TOTAL_BYTES_PER_RUN) {
-    const checked = this.validateRemoteImageUrl(url);
-    if (!checked.ok) throw new Error(checked.reason || "Blocked image URL");
-    if (!(noteFile instanceof TFile) || noteFile.extension !== "md") throw new Error("Invalid destination note");
-
-    const effectiveLimit = Math.min(MAX_LOCAL_IMAGE_BYTES, Math.max(0, Number(remainingRunBytes) || 0));
-    if (effectiveLimit <= 0) throw new Error("Per-run download limit reached");
-
-    let response;
-    try {
-      response = await requestUrl({
-        url: checked.url,
-        method: "GET",
-        headers: { Accept: "image/avif,image/webp,image/png,image/jpeg,image/gif,image/bmp,image/x-icon;q=0.8" }
-      });
-    } catch (error) {
-      throw new Error(`Download failed: ${error?.message || error}`);
-    }
-
-    if (!response || response.status < 200 || response.status >= 300) {
-      throw new Error(`HTTP ${response?.status || "error"}`);
-    }
-
-    const contentLength = Number(this.getResponseHeader(response.headers, "content-length"));
-    if (Number.isFinite(contentLength) && contentLength > effectiveLimit) {
-      throw new Error(effectiveLimit < MAX_LOCAL_IMAGE_BYTES ? "Per-run download limit would be exceeded" : "Image is larger than 20 MB");
-    }
-
-    const contentType = this.getResponseHeader(response.headers, "content-type");
-    const extension = this.getLocalImageExtension(contentType);
-    if (!extension) throw new Error("Server did not return a supported image MIME type");
-
-    const data = response.arrayBuffer;
-    if (!(data instanceof ArrayBuffer) || data.byteLength === 0) throw new Error("Empty image response");
-    if (data.byteLength > effectiveLimit) {
-      throw new Error(effectiveLimit < MAX_LOCAL_IMAGE_BYTES ? "Per-run download limit would be exceeded" : "Image is larger than 20 MB");
-    }
-    if (!this.hasValidImageMagic(data, extension)) throw new Error("Downloaded bytes do not match the declared image type");
-
-    const filename = this.buildLocalImageFilename(checked.url, extension);
-    const attachmentPath = await this.app.fileManager.getAvailablePathForAttachment(filename, noteFile.path);
-    await this.app.vault.createBinary(attachmentPath, data);
-    const created = this.app.vault.getAbstractFileByPath(attachmentPath);
-    if (!(created instanceof TFile)) throw new Error("Attachment was not created");
-    return created;
-  }
-
-  async localizeRemoteImages(file) {
-    if (!(file instanceof TFile) || file.extension !== "md") return false;
-    const editor = this.getEditorForFile(file);
-    const current = editor ? editor.getValue() : await this.app.vault.read(file);
-    const allEmbeds = this.getRemoteImageEmbeds(current);
-    if (!allEmbeds.length) {
-      new Notice("No remote image embeds found in this note.");
-      return false;
-    }
-
-    const eligible = [];
-    const blocked = [];
-    for (const embed of allEmbeds) {
-      const checked = this.validateRemoteImageUrl(embed.url);
-      if (checked.ok) eligible.push({ ...embed, url: checked.url, hostname: checked.hostname });
-      else blocked.push({ ...embed, reason: checked.reason || "Blocked by security rules" });
-    }
-
-    if (!eligible.length) {
-      new Notice(`No eligible HTTPS images. ${blocked.length} remote image${blocked.length === 1 ? " was" : "s were"} blocked by security rules.`);
-      return false;
-    }
-
-    const hosts = [...new Set(eligible.map((item) => item.hostname))].sort();
-    const visibleHosts = hosts.slice(0, 8);
-    const hostLines = visibleHosts.map((host) => `• ${host}`);
-    if (hosts.length > visibleHosts.length) hostLines.push(`• …and ${hosts.length - visibleHosts.length} more host${hosts.length - visibleHosts.length === 1 ? "" : "s"}`);
-    const confirmation = [
-      `Colori will download ${eligible.length} image embed${eligible.length === 1 ? "" : "s"} from:`,
-      "",
-      ...hostLines,
-      "",
-      "Only continue if you trust these hosts. No download has started yet."
-    ].join("\n");
-    if (!window.confirm(confirmation)) {
-      new Notice("Image localization cancelled.");
-      return false;
-    }
-
-    const embeds = eligible.slice(0, MAX_REMOTE_IMAGES_PER_RUN);
-    const downloaded = new Map();
-    const failed = new Map();
-    let totalBytes = 0;
-    let totalLimitReached = false;
-
-    for (const embed of embeds) {
-      if (downloaded.has(embed.url) || failed.has(embed.url)) continue;
-      const remaining = MAX_REMOTE_IMAGE_TOTAL_BYTES_PER_RUN - totalBytes;
-      if (remaining <= 0) {
-        totalLimitReached = true;
-        break;
-      }
-      try {
-        const attachment = await this.downloadRemoteImage(embed.url, file, remaining);
-        downloaded.set(embed.url, attachment);
-        totalBytes += Math.max(0, Number(attachment.stat?.size) || 0);
-      } catch (error) {
-        failed.set(embed.url, error?.message || String(error));
-        console.warn("Colori: remote image localization failed", embed.url, error);
-      }
-    }
-
-    let updated = current;
-    let localized = 0;
-    for (const embed of embeds) {
-      const attachment = downloaded.get(embed.url);
-      if (!(attachment instanceof TFile)) continue;
-      const localLink = `!${this.app.fileManager.generateMarkdownLink(attachment, file.path, undefined, embed.alt || undefined)}`;
-      if (!updated.includes(embed.full)) continue;
-      updated = updated.replace(embed.full, localLink);
-      localized++;
-    }
-
-    if (updated !== current) {
-      if (editor) editor.setValue(updated);
-      else await this.app.vault.modify(file, updated);
-    }
-
-    const skippedForCount = Math.max(0, eligible.length - embeds.length);
-    const parts = [`Localized ${localized} image${localized === 1 ? "" : "s"}.`];
-    if (blocked.length) parts.push(`${blocked.length} unsafe/ineligible URL${blocked.length === 1 ? " was" : "s were"} blocked.`);
-    if (failed.size) parts.push(`${failed.size} download${failed.size === 1 ? "" : "s"} failed validation or download.`);
-    if (skippedForCount) parts.push(`${skippedForCount} skipped because the per-run limit is ${MAX_REMOTE_IMAGES_PER_RUN}.`);
-    if (totalLimitReached) parts.push("Stopped at the 100 MB per-run download limit.");
-    new Notice(parts.join(" "));
-    return localized > 0;
-  }
 
   getUrlHosts(text) {
     const source = typeof text === "string" ? text : "";
@@ -1192,56 +876,6 @@ module.exports = class ColoriPlugin extends Plugin {
     }
   }
 
-  getHubPath(folder) {
-    return normalizePath(`${folder.path}/${folder.name}.md`);
-  }
-
-  isFolderHubEnabled(path) {
-    return this.settings.folderHubs.includes(path);
-  }
-
-  buildFolderHubSection(folder, hubPath) {
-    const notes = this.app.vault.getMarkdownFiles()
-      .filter((file) => file.parent?.path === folder.path && file.path !== hubPath)
-      .sort((a, b) => a.basename.localeCompare(b.basename));
-    const links = notes.map((file) => `- ${this.app.fileManager.generateMarkdownLink(file, hubPath)}`);
-    return [HUB_START, "## Notes", links.length ? links.join("\n") : "_No notes in this folder yet._", HUB_END].join("\n");
-  }
-
-  async enableFolderHub(folder) {
-    if (!(folder instanceof TFolder) || folder.path === "/") return;
-    if (!this.settings.folderHubs.includes(folder.path)) {
-      this.settings.folderHubs.push(folder.path);
-      await this.saveSettings();
-    }
-    await this.syncFolderHub(folder);
-  }
-
-  async syncFolderHub(folder) {
-    if (!(folder instanceof TFolder) || folder.path === "/") return;
-    const hubPath = this.getHubPath(folder);
-    const existing = this.app.vault.getAbstractFileByPath(hubPath);
-    if (existing && !(existing instanceof TFile)) return;
-    const section = this.buildFolderHubSection(folder, hubPath);
-    if (!existing) await this.app.vault.create(hubPath, `# ${folder.name}\n\n${section}\n`);
-    else {
-      const current = await this.app.vault.read(existing);
-      const updated = replaceManagedSection(current, HUB_START, HUB_END, section);
-      if (updated !== null && updated !== current) await this.app.vault.modify(existing, updated);
-    }
-  }
-
-  async syncTrackedFolderPath(folderPath) {
-    if (!folderPath || folderPath === "/" || !this.settings.folderHubs.includes(folderPath)) return;
-    const folder = this.app.vault.getAbstractFileByPath(folderPath);
-    if (folder instanceof TFolder) await this.syncFolderHub(folder);
-  }
-
-  async handleCreate(file) {
-    if (!(file instanceof TFile) || file.extension !== "md") return;
-    await this.syncTrackedFolderPath(file.parent?.path);
-  }
-
   async handleRename(file, oldPath) {
     const newPath = sanitizePath(file.path);
     const safeOldPath = sanitizePath(oldPath);
@@ -1255,11 +889,6 @@ module.exports = class ColoriPlugin extends Plugin {
       }
     }
 
-    this.settings.folderHubs = this.settings.folderHubs.map((path) => {
-      if (path === safeOldPath) { changed = true; return newPath; }
-      if (file instanceof TFolder && path.startsWith(`${safeOldPath}/`)) { changed = true; return `${newPath}${path.slice(safeOldPath.length)}`; }
-      return path;
-    });
 
     for (const connection of this.settings.connections) {
       if (connection.source === safeOldPath) { connection.source = newPath; changed = true; }
@@ -1274,26 +903,21 @@ module.exports = class ColoriPlugin extends Plugin {
 
     if (this.lastMarkdownPath === safeOldPath) this.lastMarkdownPath = newPath;
     if (changed) await this.saveSettings();
-    if (file instanceof TFile && file.extension === "md") {
-      await this.syncTrackedFolderPath(parentPath(safeOldPath));
-      await this.syncTrackedFolderPath(file.parent?.path);
-    }
   }
 
   async handleDelete(file) {
     const deletedPath = sanitizePath(file.path);
     if (!deletedPath) return;
-    const before = JSON.stringify([this.settings.overrides, this.settings.folderHubs, this.settings.connections]);
+    const before = JSON.stringify([this.settings.overrides, this.settings.connections]);
     this.settings.overrides = this.settings.overrides.filter((item) => !pathMatchesOrDescends(item.path, deletedPath));
-    this.settings.folderHubs = this.settings.folderHubs.filter((path) => !pathMatchesOrDescends(path, deletedPath));
     this.settings.connections = this.settings.connections.filter((item) => !pathMatchesOrDescends(item.source, deletedPath) && !pathMatchesOrDescends(item.target, deletedPath));
     if (this.lastMarkdownPath && pathMatchesOrDescends(this.lastMarkdownPath, deletedPath)) this.lastMarkdownPath = null;
-    const after = JSON.stringify([this.settings.overrides, this.settings.folderHubs, this.settings.connections]);
+    const after = JSON.stringify([this.settings.overrides, this.settings.connections]);
     if (before !== after) await this.saveSettings();
   }
 
   async resetSettings() {
-    this.settings = { ...DEFAULT_SETTINGS, overrides: [], folderHubs: [], connections: [] };
+    this.settings = { ...DEFAULT_SETTINGS, overrides: [], connections: [] };
     await this.saveSettings();
   }
 };
@@ -1437,22 +1061,6 @@ class NoteToolsView extends ItemView {
     refang.addEventListener("mousedown", (event) => event.preventDefault());
     refang.addEventListener("click", async () => { const changed = await this.plugin.transformTrackedNote("refang"); if (changed) { this.openSections.add("defang"); await this.render(); } });
     defangBody.createEl("p", { text: "If text is selected in the note, only the selection is processed. Otherwise the whole note is processed.", cls: "ct-muted" });
-
-    const localImagesBody = this.makeDropdown(container, "local-images", "Local Images");
-    const remoteImages = this.plugin.getRemoteImageEmbeds(text);
-    const eligibleRemoteImages = remoteImages.filter((item) => this.plugin.validateRemoteImageUrl(item.url).ok);
-    const blockedRemoteImages = remoteImages.length - eligibleRemoteImages.length;
-    localImagesBody.createEl("p", { text: `Eligible HTTPS images: ${eligibleRemoteImages.length} · Blocked: ${blockedRemoteImages} · Total images: ${this.countImageEmbeds(text)}`, cls: "ct-muted" });
-    const localizeButton = localImagesBody.createEl("button", { text: "Localize remote images", cls: "ct-sidebar-wide-button" });
-    localizeButton.disabled = eligibleRemoteImages.length === 0;
-    localizeButton.addEventListener("click", async () => {
-      localizeButton.disabled = true;
-      localizeButton.setText("Localizing…");
-      await this.plugin.localizeRemoteImages(file);
-      this.openSections.add("local-images");
-      await this.render();
-    });
-    localImagesBody.createEl("p", { text: "Security-first: HTTPS only. You must confirm the source hosts before any network request. Downloads are MIME-checked, signature-checked, size-limited, and saved only through Obsidian’s attachment API.", cls: "ct-muted" });
 
     const iocBody = this.makeDropdown(container, "ioc", "IOC Scanner");
     const typeBox = iocBody.createDiv({ cls: "ct-ioc-type-grid" });
