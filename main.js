@@ -666,87 +666,6 @@ module.exports = class ColoriPlugin extends Plugin {
   }
 
 
-  getNoteTags(file) {
-    const cache = file instanceof TFile ? this.app.metadataCache.getFileCache(file) : null;
-    const tags = new Set();
-    const add = (value) => {
-      if (typeof value !== "string") return;
-      for (const part of value.split(/[\s,]+/)) {
-        const clean = part.trim().replace(/^#/, "").toLowerCase();
-        if (clean) tags.add(clean);
-      }
-    };
-    for (const tag of cache?.tags || []) add(tag?.tag || "");
-    const frontmatterTags = cache?.frontmatter?.tags;
-    if (Array.isArray(frontmatterTags)) for (const tag of frontmatterTags) add(String(tag));
-    else add(frontmatterTags);
-    return tags;
-  }
-
-  getRelationTerms(file) {
-    if (!(file instanceof TFile)) return new Set();
-    const stop = new Set(["the", "and", "for", "with", "from", "this", "that", "into", "note", "notes", "level", "module", "lesson"]);
-    const cache = this.app.metadataCache.getFileCache(file);
-    const text = [file.basename, ...(cache?.headings || []).map((item) => item.heading || "")].join(" ").toLowerCase();
-    return new Set((text.match(/[a-z0-9][a-z0-9_-]{2,}/g) || []).filter((term) => !stop.has(term)));
-  }
-
-  getRelatedNotes(file, limit = 10) {
-    if (!(file instanceof TFile)) return [];
-    const resolved = this.app.metadataCache.resolvedLinks || {};
-    const sourceLinks = new Set(Object.keys(resolved[file.path] || {}));
-    const sourceTags = this.getNoteTags(file);
-    const sourceTerms = this.getRelationTerms(file);
-    const manual = new Set();
-    for (const item of this.settings.connections) {
-      if (item.source === file.path) manual.add(item.target);
-      if (item.target === file.path) manual.add(item.source);
-    }
-
-    const related = [];
-    for (const candidate of this.app.vault.getMarkdownFiles()) {
-      if (candidate.path === file.path) continue;
-      let score = 0;
-      const reasons = [];
-      const candidateLinks = new Set(Object.keys(resolved[candidate.path] || {}));
-
-      if (manual.has(candidate.path)) { score += 100; reasons.push("Manual connection"); }
-      if (sourceLinks.has(candidate.path)) { score += 70; reasons.push("Linked from this note"); }
-      if (candidateLinks.has(file.path)) { score += 70; reasons.push("Links to this note"); }
-
-      const candidateTags = this.getNoteTags(candidate);
-      const sharedTags = [...sourceTags].filter((tag) => candidateTags.has(tag));
-      if (sharedTags.length) {
-        score += Math.min(sharedTags.length, 5) * 15;
-        reasons.push(`${sharedTags.length} shared tag${sharedTags.length === 1 ? "" : "s"}`);
-      }
-
-      const sharedTargets = [...sourceLinks].filter((path) => candidateLinks.has(path));
-      if (sharedTargets.length) {
-        score += Math.min(sharedTargets.length, 5) * 6;
-        reasons.push(`${sharedTargets.length} shared link${sharedTargets.length === 1 ? "" : "s"}`);
-      }
-
-      const candidateTerms = this.getRelationTerms(candidate);
-      const sharedTerms = [...sourceTerms].filter((term) => candidateTerms.has(term));
-      if (sharedTerms.length) {
-        score += Math.min(sharedTerms.length, 5) * 4;
-        reasons.push(`${sharedTerms.length} shared topic term${sharedTerms.length === 1 ? "" : "s"}`);
-      }
-
-      if (file.parent?.path && candidate.parent?.path === file.parent.path) {
-        score += 3;
-        reasons.push("Same folder");
-      }
-
-      if (score > 0) related.push({ file: candidate, score, reasons });
-    }
-
-    return related
-      .sort((a, b) => b.score - a.score || a.file.basename.localeCompare(b.file.basename))
-      .slice(0, Math.max(1, Math.min(25, Number(limit) || 10)));
-  }
-
   async openSidebar() {
     let leaf = this.app.workspace.getLeavesOfType(VIEW_TYPE)[0];
     if (!leaf) {
@@ -829,6 +748,24 @@ module.exports = class ColoriPlugin extends Plugin {
 
   getOutgoingConnections(sourcePath) {
     return this.settings.connections.filter((item) => item.source === sourcePath);
+  }
+
+  getConnectionsFor(path) {
+    const safePath = sanitizePath(path);
+    if (!safePath) return [];
+    const seen = new Set();
+    const results = [];
+    for (const item of this.settings.connections) {
+      let otherPath = null;
+      if (item.source === safePath) otherPath = item.target;
+      else if (item.target === safePath) otherPath = item.source;
+      if (!otherPath || seen.has(otherPath)) continue;
+      const file = this.app.vault.getAbstractFileByPath(otherPath);
+      if (!(file instanceof TFile) || file.extension !== "md") continue;
+      seen.add(otherPath);
+      results.push({ file, source: item.source, target: item.target });
+    }
+    return results.sort((a, b) => a.file.basename.localeCompare(b.file.basename));
   }
 
   async addConnection(sourceFile, targetFile) {
@@ -957,35 +894,76 @@ class NoteToolsView extends ItemView {
   }
 
 
-  countImageEmbeds(text) {
+  countImageEmbeds(file, text) {
     const source = typeof text === "string" ? text : "";
-    let count = 0;
+    const positions = new Set();
+    let fallbackKey = 0;
+    const imageExtensions = new Set(["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg", "avif", "ico"]);
 
-    // Standard Markdown images, including remote URLs and local Markdown paths.
+    const addAt = (offset) => {
+      if (Number.isFinite(offset) && offset >= 0) positions.add(`offset:${offset}`);
+      else positions.add(`fallback:${fallbackKey++}`);
+    };
+
+    // Prefer Obsidian's parsed metadata for local/wikilink embeds.
+    const cache = file instanceof TFile ? this.app.metadataCache.getFileCache(file) : null;
+    for (const embed of cache?.embeds || []) {
+      const rawLink = String(embed?.link || "").split("|", 1)[0].split("#", 1)[0].trim();
+      let isImage = false;
+
+      const resolved = rawLink && file instanceof TFile
+        ? this.app.metadataCache.getFirstLinkpathDest(rawLink, file.path)
+        : null;
+      if (resolved instanceof TFile) {
+        isImage = imageExtensions.has(String(resolved.extension || "").toLowerCase());
+      }
+
+      if (!isImage) {
+        const clean = rawLink.split(/[?#]/, 1)[0];
+        const ext = clean.includes(".") ? clean.slice(clean.lastIndexOf(".") + 1).toLowerCase() : "";
+        isImage = imageExtensions.has(ext);
+      }
+
+      if (isImage) addAt(embed?.position?.start?.offset);
+    }
+
+    // Standard Markdown images, including remote images. Offsets dedupe entries
+    // already reported by Obsidian metadata.
     const markdown = /!\[[^\]]*\]\(\s*[^)]+\)/g;
-    count += (source.match(markdown) || []).length;
-
-    // Obsidian image embeds such as ![[image.png]] or ![[image.png|500]].
-    const wiki = /!\[\[([^\]]+)\]\]/g;
     let match;
+    while ((match = markdown.exec(source))) {
+      addAt(match.index);
+      if (match.index === markdown.lastIndex) markdown.lastIndex++;
+    }
+
+    // Wiki image embeds are also scanned as a fallback for cache misses.
+    const wiki = /!\[\[([^\]]+)\]\]/g;
     while ((match = wiki.exec(source))) {
       const target = String(match[1] || "").split("|", 1)[0].split("#", 1)[0].trim();
-      if (/\.(?:png|jpe?g|gif|webp|bmp|svg|avif|ico)$/i.test(target)) count++;
+      const resolved = file instanceof TFile ? this.app.metadataCache.getFirstLinkpathDest(target, file.path) : null;
+      const ext = resolved instanceof TFile
+        ? String(resolved.extension || "").toLowerCase()
+        : (target.includes(".") ? target.slice(target.lastIndexOf(".") + 1).toLowerCase() : "");
+      if (imageExtensions.has(ext)) addAt(match.index);
       if (match.index === wiki.lastIndex) wiki.lastIndex++;
     }
 
-    // Raw HTML images.
-    count += (source.match(/<img\b[^>]*>/gi) || []).length;
-    return count;
-  }
+    // Raw HTML images are not guaranteed to appear in metadataCache.embeds.
+    const html = /<img\b[^>]*>/gi;
+    while ((match = html.exec(source))) {
+      addAt(match.index);
+      if (match.index === html.lastIndex) html.lastIndex++;
+    }
 
+    return positions.size;
+  }
   renderNoteInfo(parent, file, text, counts) {
     const infoCard = parent.createDiv({ cls: "ct-note-info-card" });
     infoCard.createEl("div", { text: "Note Info", cls: "ct-note-info-title" });
     const infoGrid = infoCard.createDiv({ cls: "ct-note-info" });
     const words = (text.match(/\S+/g) || []).length;
     const lines = text ? text.split(/\r?\n/).length : 0;
-    const images = this.countImageEmbeds(text);
+    const images = this.countImageEmbeds(file, text);
     const size = file.stat.size < 1024 ? `${file.stat.size} B` : `${(file.stat.size / 1024).toFixed(1)} KB`;
 
     const addInfoRow = (name, value, valueClass = "") => {
@@ -994,14 +972,6 @@ class NoteToolsView extends ItemView {
     };
 
     addInfoRow("Total IOCs", counts.Total, "ct-note-info-ioc-total");
-
-    infoGrid.createEl("span", { text: "IOC breakdown", cls: "ct-note-info-label ct-ioc-breakdown-label" });
-    const breakdown = infoGrid.createDiv({ cls: "ct-ioc-breakdown" });
-    for (const [label, value] of [["URL", counts.URL], ["IP", counts.IP], ["Domain", counts.Domain], ["Hash", counts.Hash], ["Email", counts.Email]]) {
-      const pill = breakdown.createSpan({ cls: "ct-ioc-pill" });
-      pill.createSpan({ text: label, cls: "ct-ioc-pill-label" });
-      pill.createSpan({ text: String(value), cls: "ct-ioc-pill-count" });
-    }
 
     addInfoRow("Words", words);
     addInfoRow("Lines", lines);
@@ -1063,6 +1033,14 @@ class NoteToolsView extends ItemView {
     defangBody.createEl("p", { text: "If text is selected in the note, only the selection is processed. Otherwise the whole note is processed.", cls: "ct-muted" });
 
     const iocBody = this.makeDropdown(container, "ioc", "IOC Scanner");
+    const iocSummary = iocBody.createDiv({ cls: "ct-ioc-scanner-summary" });
+    iocSummary.createSpan({ text: `Total ${counts.Total}`, cls: "ct-ioc-scanner-total" });
+    const iocBreakdown = iocSummary.createDiv({ cls: "ct-ioc-breakdown" });
+    for (const [label, value] of [["URL", counts.URL], ["IP", counts.IP], ["Domain", counts.Domain], ["Hash", counts.Hash], ["Email", counts.Email]]) {
+      const pill = iocBreakdown.createSpan({ cls: "ct-ioc-pill" });
+      pill.createSpan({ text: label, cls: "ct-ioc-pill-label" });
+      pill.createSpan({ text: String(value), cls: "ct-ioc-pill-count" });
+    }
     const typeBox = iocBody.createDiv({ cls: "ct-ioc-type-grid" });
     const choices = [["url", "URLs"], ["ip", "IPs"], ["domain", "Domains"], ["hash", "Hashes"], ["email", "Emails"]];
     for (const [value, label] of choices) {
@@ -1233,32 +1211,38 @@ class NoteToolsView extends ItemView {
     }
 
     const graphBody = this.makeDropdown(container, "graph", "Connections");
-    const count = this.plugin.getOutgoingConnections(file.path).length;
-    const graphActions = graphBody.createDiv({ cls: "ct-sidebar-actions" });
-    const connect = graphActions.createEl("button", { text: "Add manual" });
-    connect.addEventListener("click", () => new NoteSuggestModal(this.app, file.path, async (target) => { await this.plugin.addConnection(file, target); this.openSections.add("graph"); await this.render(); }).open());
-    const manage = graphActions.createEl("button", { text: `Manual (${count})` });
-    manage.addEventListener("click", () => new ConnectionsModal(this.app, this.plugin, file).open());
+    const connect = graphBody.createEl("button", { text: "Connect another note", cls: "ct-sidebar-wide-button mod-cta" });
+    connect.addEventListener("click", () => new NoteSuggestModal(this.app, file.path, async (target) => {
+      await this.plugin.addConnection(file, target);
+      this.openSections.add("graph");
+      await this.render();
+    }).open());
 
-    graphBody.createEl("div", { text: "Related Notes", cls: "ct-related-heading" });
-    graphBody.createEl("p", { text: "Local relationship ranking from links, backlinks, tags, headings, folder proximity, and manual connections.", cls: "ct-muted ct-related-help" });
-    const related = this.plugin.getRelatedNotes(file, 10);
-    const relatedBox = graphBody.createDiv({ cls: "ct-related-list" });
-    if (!related.length) {
-      relatedBox.createEl("div", { text: "No related notes found yet.", cls: "ct-muted" });
+    const connections = this.plugin.getConnectionsFor(file.path);
+    const connectionHeader = graphBody.createDiv({ cls: "ct-connection-header" });
+    connectionHeader.createSpan({ text: `Connected notes (${connections.length})` });
+
+    if (!connections.length) {
+      graphBody.createEl("p", { text: "No manual connections yet.", cls: "ct-muted" });
+    } else {
+      const list = graphBody.createDiv({ cls: "ct-connection-list" });
+      for (const item of connections) {
+        const row = list.createDiv({ cls: "ct-connection-row" });
+        const open = row.createEl("button", { text: item.file.basename, cls: "ct-connection-open" });
+        open.setAttribute("title", item.file.path);
+        open.addEventListener("click", async () => {
+          await this.app.workspace.getLeaf(false).openFile(item.file);
+        });
+        const remove = row.createEl("button", { text: "×", cls: "ct-connection-remove" });
+        remove.setAttribute("aria-label", `Remove connection to ${item.file.basename}`);
+        remove.setAttribute("title", "Remove connection");
+        remove.addEventListener("click", async () => {
+          await this.plugin.removeConnection(item.source, item.target);
+          this.openSections.add("graph");
+          await this.render();
+        });
+      }
     }
-    for (const item of related) {
-      const card = relatedBox.createEl("details", { cls: "ct-related-note" });
-      const summary = card.createEl("summary");
-      summary.createSpan({ text: item.file.basename, cls: "ct-related-note-name" });
-      summary.createSpan({ text: `${item.reasons.length} signal${item.reasons.length === 1 ? "" : "s"}`, cls: "ct-related-note-signal" });
-      const body = card.createDiv({ cls: "ct-related-note-body" });
-      body.createEl("div", { text: item.file.path, cls: "ct-related-note-path" });
-      body.createEl("div", { text: item.reasons.join(" · "), cls: "ct-related-note-reasons" });
-      const open = body.createEl("button", { text: "Open note", cls: "ct-sidebar-wide-button" });
-      open.addEventListener("click", async () => { await this.app.workspace.getLeaf(false).openFile(item.file); });
-    }
-    graphBody.createEl("p", { text: this.plugin.settings.graphMatchNoteColors ? "Graph color matching: ON" : "Graph color matching: OFF", cls: "ct-muted ct-graph-state" });
 
     this.renderNoteInfo(container, file, text, counts);
 
@@ -1275,21 +1259,6 @@ class NoteSuggestModal extends FuzzySuggestModal {
   getItems() { return this.app.vault.getMarkdownFiles().filter((file) => file.path !== this.excludedPath); }
   getItemText(item) { return item.path; }
   onChooseItem(item) { this.onChoose(item); }
-}
-
-class ConnectionsModal extends FuzzySuggestModal {
-  constructor(app, plugin, sourceFile) {
-    super(app);
-    this.plugin = plugin;
-    this.sourceFile = sourceFile;
-    this.setPlaceholder("Choose a connection to remove…");
-  }
-  getItems() { return this.plugin.getOutgoingConnections(this.sourceFile.path); }
-  getItemText(item) { return item.target; }
-  async onChooseItem(item) {
-    await this.plugin.removeConnection(item.source, item.target);
-    new Notice("Connection removed.");
-  }
 }
 
 class ColoriSettingTab extends PluginSettingTab {
