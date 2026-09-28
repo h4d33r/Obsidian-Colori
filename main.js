@@ -922,114 +922,92 @@ class NoteToolsView extends ItemView {
   }
 
 
-  countRenderedImages(file) {
-    if (!(file instanceof TFile)) return 0;
-    for (const leaf of this.app.workspace.getLeavesOfType("markdown")) {
-      const view = leaf?.view;
-      if (!(view instanceof MarkdownView) || view.file?.path !== file.path || !view.contentEl) continue;
-
-      const images = new Set();
-      for (const image of view.contentEl.querySelectorAll(".markdown-preview-view img, .markdown-source-view img")) {
-        if (image instanceof HTMLImageElement) images.add(image);
-      }
-      return images.size;
-    }
-    return 0;
-  }
-
   countImageEmbeds(file, text) {
     const source = typeof text === "string" ? text : "";
-    let count = 0;
+    if (!(file instanceof TFile) || !source) return 0;
+
     const imageExtensions = new Set(["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg", "avif", "ico"]);
+    const counted = new Set();
 
-    // Parse standard Markdown images with balanced destination parentheses.
-    // This handles ordinary paths/URLs and very large inline data:image/... payloads.
-    let cursor = 0;
-    while (cursor < source.length) {
-      const start = source.indexOf("![", cursor);
-      if (start < 0) break;
+    const isImageTarget = (rawTarget) => {
+      const target = String(rawTarget || "").trim();
+      if (!target) return false;
+      if (/^data:image\/(?:png|jpe?g|gif|webp|bmp|svg\+xml|avif|x-icon|vnd\.microsoft\.icon)[;,]/i.test(target)) return true;
 
-      // ![[...]] is Obsidian wiki-embed syntax; handle it separately below.
-      if (source[start + 2] === "[") {
-        cursor = start + 3;
-        continue;
+      const cleanTarget = target.split("|", 1)[0].split("#", 1)[0].trim();
+      const resolved = this.app.metadataCache.getFirstLinkpathDest(cleanTarget, file.path);
+      if (resolved instanceof TFile) {
+        return imageExtensions.has(String(resolved.extension || "").toLowerCase());
       }
 
-      let altEnd = start + 2;
-      let escaped = false;
-      for (; altEnd < source.length; altEnd++) {
-        const ch = source[altEnd];
-        if (escaped) { escaped = false; continue; }
-        if (ch === "\\") { escaped = true; continue; }
-        if (ch === "]") break;
-      }
+      let pathPart = cleanTarget;
+      try {
+        if (/^https?:\/\//i.test(cleanTarget)) pathPart = new URL(cleanTarget).pathname;
+      } catch (_) {}
+      pathPart = pathPart.split(/[?#]/, 1)[0];
+      const dot = pathPart.lastIndexOf(".");
+      return dot >= 0 && imageExtensions.has(pathPart.slice(dot + 1).toLowerCase());
+    };
 
-      if (altEnd >= source.length || source[altEnd] !== "]") {
-        cursor = start + 2;
-        continue;
-      }
+    // Primary source: Obsidian's parser for THIS file. We only accept an embed
+    // when its recorded source range still points at an actual ![...] token in
+    // the current Markdown, preventing stale metadata from inflating the count.
+    const cache = this.app.metadataCache.getFileCache(file);
+    for (const embed of cache?.embeds || []) {
+      const startOffset = Number(embed?.position?.start?.offset);
+      const endOffset = Number(embed?.position?.end?.offset);
+      if (!Number.isFinite(startOffset) || !Number.isFinite(endOffset)) continue;
+      if (startOffset < 0 || endOffset <= startOffset || endOffset > source.length) continue;
 
-      let pos = altEnd + 1;
-      while (pos < source.length && /\s/.test(source[pos])) pos++;
-      if (source[pos] !== "(") {
-        cursor = altEnd + 1;
-        continue;
-      }
+      const snippet = source.slice(startOffset, endOffset).trim();
+      if (!snippet.startsWith("![")) continue;
+      if (!isImageTarget(embed?.link)) continue;
 
-      let depth = 1;
-      let quote = "";
-      escaped = false;
-      pos++;
-      for (; pos < source.length; pos++) {
-        const ch = source[pos];
-        if (escaped) { escaped = false; continue; }
-        if (ch === "\\") { escaped = true; continue; }
-
-        if (quote) {
-          if (ch === quote) quote = "";
-          continue;
-        }
-        if (ch === '"' || ch === "'") { quote = ch; continue; }
-        if (ch === "(") depth++;
-        else if (ch === ")") {
-          depth--;
-          if (depth === 0) {
-            count++;
-            pos++;
-            break;
-          }
-        }
-      }
-
-      cursor = Math.max(start + 2, pos);
+      counted.add(`cache:${startOffset}:${endOffset}`);
     }
 
-    // Obsidian wiki image embeds: ![[attachment]] or ![[attachment|size]].
-    // Metadata only resolves embeds that are actually present in current source.
+    // Fallback for Obsidian wiki image embeds if metadata is not ready yet.
     const wiki = /!\[\[([^\]]+)\]\]/g;
     let match;
     while ((match = wiki.exec(source))) {
-      const target = String(match[1] || "").split("|", 1)[0].split("#", 1)[0].trim();
-      const resolved = target && file instanceof TFile
-        ? this.app.metadataCache.getFirstLinkpathDest(target, file.path)
-        : null;
-
-      let extension = "";
-      if (resolved instanceof TFile) {
-        extension = String(resolved.extension || "").toLowerCase();
-      } else {
-        const clean = target.split(/[?#]/, 1)[0];
-        if (clean.includes(".")) extension = clean.slice(clean.lastIndexOf(".") + 1).toLowerCase();
-      }
-
-      if (imageExtensions.has(extension)) count++;
+      if (isImageTarget(match[1])) counted.add(`source:${match.index}:${wiki.lastIndex}`);
       if (match.index === wiki.lastIndex) wiki.lastIndex++;
     }
 
-    // Raw HTML image tags.
-    count += (source.match(/<img\b[^>]*>/gi) || []).length;
+    // Inline Base64/data-URI Markdown images are not always represented in the
+    // metadata cache, so count their explicit source syntax directly.
+    const dataImage = /!\[[^\]\r\n]*\]\(\s*data:image\/(?:png|jpe?g|gif|webp|bmp|svg\+xml|avif|x-icon|vnd\.microsoft\.icon)[;,][\s\S]*?\)/gi;
+    while ((match = dataImage.exec(source))) {
+      counted.add(`source:${match.index}:${dataImage.lastIndex}`);
+      if (match.index === dataImage.lastIndex) dataImage.lastIndex++;
+    }
 
-    return Math.max(count, this.countRenderedImages(file));
+    // Normal Markdown image links that metadata may not have parsed yet.
+    const markdownImage = /!\[[^\]\r\n]*\]\(\s*((?:https?:\/\/|\.\.?\/|\/)?[^\s)]+)(?:\s+["'][^"']*["'])?\s*\)/gi;
+    while ((match = markdownImage.exec(source))) {
+      if (isImageTarget(match[1])) counted.add(`source:${match.index}:${markdownImage.lastIndex}`);
+      if (match.index === markdownImage.lastIndex) markdownImage.lastIndex++;
+    }
+
+    // Raw HTML images.
+    const htmlImage = /<img\b[^>]*\bsrc\s*=\s*(["'])(.*?)\1[^>]*>/gi;
+    while ((match = htmlImage.exec(source))) {
+      const src = String(match[2] || "").trim();
+      if (/^data:image\//i.test(src) || isImageTarget(src)) {
+        counted.add(`source:${match.index}:${htmlImage.lastIndex}`);
+      }
+      if (match.index === htmlImage.lastIndex) htmlImage.lastIndex++;
+    }
+
+    // The same source embed can be observed by both cache and fallback parsing.
+    // Deduplicate by source offset before returning the count.
+    const offsets = new Set();
+    for (const key of counted) {
+      const parts = key.split(":");
+      const offset = key.startsWith("cache:") ? parts[1] : parts[1];
+      if (offset !== undefined) offsets.add(offset);
+    }
+    return offsets.size;
   }
 
   renderNoteInfo(parent, file, text, counts) {
