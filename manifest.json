@@ -1,9 +1,9 @@
 {
   "id": "colori-dev",
   "name": "Colori Dev",
-  "version": "1.4.8",
+  "version": "1.4.9",
   "minAppVersion": "1.13.7",
-  "description": "Development build with Safe Links, IOC scanning, appearance controls, related-note connections, and compact note information.",
+  "description": "Development build with Safe Links, IOC scanning, appearance controls, quick note connections, and compact note information.",
   "author": "H4d33r",
   "isDesktopOnly": false
 }
