@@ -277,57 +277,6 @@ body:not([style*='--ct-note-icon: ""']) .nav-file-title-content::before { margin
   pointer-events: auto;
 }
 
-.ct-related-heading {
-  margin-top: 14px;
-  color: var(--text-accent);
-  font-weight: 750;
-}
-.ct-related-help { margin: 4px 0 8px; }
-.ct-related-list { display: flex; flex-direction: column; gap: 6px; }
-.ct-related-note {
-  border: 1px solid var(--background-modifier-border);
-  border-radius: 7px;
-  overflow: hidden;
-  background: var(--background-secondary);
-}
-.ct-related-note > summary {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 8px;
-  cursor: pointer;
-  list-style: none;
-  padding: 8px 9px;
-}
-.ct-related-note > summary::-webkit-details-marker { display: none; }
-.ct-related-note-name {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-weight: 650;
-}
-.ct-related-note-signal {
-  color: var(--text-accent);
-  font-size: var(--font-ui-smaller);
-}
-.ct-related-note-body {
-  padding: 8px 9px 9px;
-  border-top: 1px solid var(--background-modifier-border);
-  background: var(--background-primary);
-}
-.ct-related-note-path {
-  color: var(--text-muted);
-  font-size: var(--font-ui-smaller);
-  overflow-wrap: anywhere;
-}
-.ct-related-note-reasons {
-  margin-top: 5px;
-  font-size: var(--font-ui-small);
-  line-height: 1.4;
-}
-.ct-graph-state { margin: 9px 0 0; }
-
 
 .ct-note-info-card {
   margin-top: 12px;
@@ -455,17 +404,26 @@ body:not([style*='--ct-note-icon: ""']) .nav-file-title-content::before { margin
   font-weight: 750;
 }
 
-.ct-ioc-breakdown-label {
-  align-self: start;
-  padding-top: 3px;
-}
-
 .ct-ioc-breakdown {
   display: flex;
   flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: 4px;
+  gap: 5px;
   min-width: 0;
+}
+
+.ct-ioc-scanner-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin: 2px 0 12px;
+  padding: 9px;
+  border-radius: 7px;
+  background: var(--background-secondary);
+}
+
+.ct-ioc-scanner-total {
+  color: var(--text-accent);
+  font-weight: 750;
 }
 
 .ct-ioc-pill {
@@ -488,4 +446,38 @@ body:not([style*='--ct-note-icon: ""']) .nav-file-title-content::before { margin
   color: var(--text-normal);
   font-weight: 750;
   font-variant-numeric: tabular-nums;
+}
+
+/* Quick manual connections */
+.ct-connection-header {
+  margin: 12px 0 6px;
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+  font-weight: 650;
+}
+
+.ct-connection-list {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.ct-connection-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 30px;
+  gap: 6px;
+  align-items: center;
+}
+
+.ct-connection-open {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+}
+
+.ct-connection-remove {
+  width: 30px;
+  padding: 4px 0;
 }
