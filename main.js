@@ -922,6 +922,21 @@ class NoteToolsView extends ItemView {
   }
 
 
+  countRenderedImages(file) {
+    if (!(file instanceof TFile)) return 0;
+    for (const leaf of this.app.workspace.getLeavesOfType("markdown")) {
+      const view = leaf?.view;
+      if (!(view instanceof MarkdownView) || view.file?.path !== file.path || !view.contentEl) continue;
+
+      const images = new Set();
+      for (const image of view.contentEl.querySelectorAll(".markdown-preview-view img, .markdown-source-view img")) {
+        if (image instanceof HTMLImageElement) images.add(image);
+      }
+      return images.size;
+    }
+    return 0;
+  }
+
   countImageEmbeds(file, text) {
     const source = typeof text === "string" ? text : "";
     let count = 0;
@@ -1014,7 +1029,7 @@ class NoteToolsView extends ItemView {
     // Raw HTML image tags.
     count += (source.match(/<img\b[^>]*>/gi) || []).length;
 
-    return count;
+    return Math.max(count, this.countRenderedImages(file));
   }
 
   renderNoteInfo(parent, file, text, counts) {
