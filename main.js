@@ -927,13 +927,70 @@ class NoteToolsView extends ItemView {
     let count = 0;
     const imageExtensions = new Set(["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg", "avif", "ico"]);
 
-    // Standard Markdown image syntax: ![alt](path-or-url)
-    const markdown = /!\[[^\]]*\]\(\s*[^)]+\)/g;
-    count += (source.match(markdown) || []).length;
+    // Parse standard Markdown images with balanced destination parentheses.
+    // This handles ordinary paths/URLs and very large inline data:image/... payloads.
+    let cursor = 0;
+    while (cursor < source.length) {
+      const start = source.indexOf("![", cursor);
+      if (start < 0) break;
 
-    // Obsidian wiki embeds: ![[attachment]] or ![[attachment|size]].
-    // Metadata is used only to resolve an embed that actually exists in THIS
-    // note's current source, which avoids stale-cache counts after switching notes.
+      // ![[...]] is Obsidian wiki-embed syntax; handle it separately below.
+      if (source[start + 2] === "[") {
+        cursor = start + 3;
+        continue;
+      }
+
+      let altEnd = start + 2;
+      let escaped = false;
+      for (; altEnd < source.length; altEnd++) {
+        const ch = source[altEnd];
+        if (escaped) { escaped = false; continue; }
+        if (ch === "\\") { escaped = true; continue; }
+        if (ch === "]") break;
+      }
+
+      if (altEnd >= source.length || source[altEnd] !== "]") {
+        cursor = start + 2;
+        continue;
+      }
+
+      let pos = altEnd + 1;
+      while (pos < source.length && /\s/.test(source[pos])) pos++;
+      if (source[pos] !== "(") {
+        cursor = altEnd + 1;
+        continue;
+      }
+
+      let depth = 1;
+      let quote = "";
+      escaped = false;
+      pos++;
+      for (; pos < source.length; pos++) {
+        const ch = source[pos];
+        if (escaped) { escaped = false; continue; }
+        if (ch === "\\") { escaped = true; continue; }
+
+        if (quote) {
+          if (ch === quote) quote = "";
+          continue;
+        }
+        if (ch === '"' || ch === "'") { quote = ch; continue; }
+        if (ch === "(") depth++;
+        else if (ch === ")") {
+          depth--;
+          if (depth === 0) {
+            count++;
+            pos++;
+            break;
+          }
+        }
+      }
+
+      cursor = Math.max(start + 2, pos);
+    }
+
+    // Obsidian wiki image embeds: ![[attachment]] or ![[attachment|size]].
+    // Metadata only resolves embeds that are actually present in current source.
     const wiki = /!\[\[([^\]]+)\]\]/g;
     let match;
     while ((match = wiki.exec(source))) {
@@ -959,6 +1016,7 @@ class NoteToolsView extends ItemView {
 
     return count;
   }
+
   renderNoteInfo(parent, file, text, counts) {
     const infoCard = parent.createDiv({ cls: "ct-note-info-card" });
     infoCard.createEl("div", { text: "Note Info", cls: "ct-note-info-title" });
