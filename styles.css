@@ -121,22 +121,6 @@ body:not([style*='--ct-note-icon: ""']) .nav-file-title-content::before { margin
 .ct-sidebar-actions button,
 .ct-sidebar-wide-button { width: 100%; }
 .ct-sidebar-wide-button { margin-top: 8px; }
-.ct-status {
-  display: inline-flex;
-  align-items: center;
-  padding: 3px 8px;
-  border-radius: 999px;
-  background: var(--background-modifier-error);
-  font-size: var(--font-ui-smaller);
-  font-weight: 600;
-}
-.ct-status-on { background: var(--background-modifier-success); }
-.ct-ioc-controls {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  gap: 8px;
-}
-.ct-ioc-controls select { width: 100%; }
 .ct-ioc-results {
   margin-top: 10px;
   max-height: 360px;
@@ -149,19 +133,6 @@ body:not([style*='--ct-note-icon: ""']) .nav-file-title-content::before { margin
   align-items: center;
   padding: 5px 0;
 }
-.ct-ioc-value { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
-.ct-ioc-type {
-  color: var(--text-muted);
-  font-size: var(--font-ui-smaller);
-  text-transform: uppercase;
-}
-.ct-ioc-value code {
-  display: block;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
 .ct-ioc-row button { padding: 2px 7px; font-size: var(--font-ui-smaller); }
 .ct-note-info {
   display: grid;
@@ -171,14 +142,6 @@ body:not([style*='--ct-note-icon: ""']) .nav-file-title-content::before { margin
 }
 .ct-note-info-label { color: var(--text-muted); }
 .ct-note-info-value { text-align: right; overflow-wrap: anywhere; }
-
-body.ct-safe-links .workspace-leaf-content[data-type="markdown"] a[href^="http://"],
-body.ct-safe-links .workspace-leaf-content[data-type="markdown"] a[href^="https://"],
-body.ct-safe-links .workspace-leaf-content[data-type="markdown"] .external-link,
-body.ct-safe-links .workspace-leaf-content[data-type="markdown"] .cm-url {
-  pointer-events: none !important;
-  cursor: not-allowed !important;
-}
 
 .ct-tools-dropdown {
   margin-top: 10px;
@@ -196,21 +159,6 @@ body.ct-safe-links .workspace-leaf-content[data-type="markdown"] .cm-url {
 
 .ct-tools-dropdown-body { padding: 4px 12px 12px; }
 
-.ct-ioc-summary {
-  margin: 10px 0 4px;
-  padding: 9px 10px;
-  border-radius: 7px;
-  background: var(--background-secondary-alt);
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-}
-
-.ct-ioc-summary span {
-  color: var(--text-muted);
-  font-size: var(--font-ui-smaller);
-  line-height: 1.45;
-}
 
 .ct-ioc-type-grid {
   display: grid;
@@ -380,32 +328,6 @@ body.ct-safe-links .workspace-leaf-content[data-type="markdown"] .cm-url {
 }
 .ct-graph-state { margin: 9px 0 0; }
 
-.ct-appearance-body .ct-appearance-setting {
-  display: grid !important;
-  grid-template-columns: minmax(86px, 1fr) minmax(0, 1.2fr);
-  align-items: center;
-  gap: 8px;
-  padding: 7px 0 !important;
-}
-.ct-appearance-setting .setting-item-info {
-  min-width: 0;
-  margin: 0 !important;
-}
-.ct-appearance-setting .setting-item-control {
-  width: 100%;
-  min-width: 0;
-  margin: 0 !important;
-  justify-content: flex-end;
-}
-.ct-appearance-setting .setting-item-control input[type="text"] {
-  width: 100%;
-  min-width: 0;
-}
-.ct-appearance-setting .setting-item-control input[type="range"],
-.ct-appearance-setting .setting-item-control .slider {
-  width: 100%;
-  min-width: 0;
-}
 
 .ct-note-info-card {
   margin-top: 12px;
