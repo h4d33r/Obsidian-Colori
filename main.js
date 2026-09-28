@@ -924,66 +924,40 @@ class NoteToolsView extends ItemView {
 
   countImageEmbeds(file, text) {
     const source = typeof text === "string" ? text : "";
-    const positions = new Set();
-    let fallbackKey = 0;
+    let count = 0;
     const imageExtensions = new Set(["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg", "avif", "ico"]);
 
-    const addAt = (offset) => {
-      if (Number.isFinite(offset) && offset >= 0) positions.add(`offset:${offset}`);
-      else positions.add(`fallback:${fallbackKey++}`);
-    };
-
-    // Prefer Obsidian's parsed metadata for local/wikilink embeds.
-    const cache = file instanceof TFile ? this.app.metadataCache.getFileCache(file) : null;
-    for (const embed of cache?.embeds || []) {
-      const rawLink = String(embed?.link || "").split("|", 1)[0].split("#", 1)[0].trim();
-      let isImage = false;
-
-      const resolved = rawLink && file instanceof TFile
-        ? this.app.metadataCache.getFirstLinkpathDest(rawLink, file.path)
-        : null;
-      if (resolved instanceof TFile) {
-        isImage = imageExtensions.has(String(resolved.extension || "").toLowerCase());
-      }
-
-      if (!isImage) {
-        const clean = rawLink.split(/[?#]/, 1)[0];
-        const ext = clean.includes(".") ? clean.slice(clean.lastIndexOf(".") + 1).toLowerCase() : "";
-        isImage = imageExtensions.has(ext);
-      }
-
-      if (isImage) addAt(embed?.position?.start?.offset);
-    }
-
-    // Standard Markdown images, including remote images. Offsets dedupe entries
-    // already reported by Obsidian metadata.
+    // Standard Markdown image syntax: ![alt](path-or-url)
     const markdown = /!\[[^\]]*\]\(\s*[^)]+\)/g;
-    let match;
-    while ((match = markdown.exec(source))) {
-      addAt(match.index);
-      if (match.index === markdown.lastIndex) markdown.lastIndex++;
-    }
+    count += (source.match(markdown) || []).length;
 
-    // Wiki image embeds are also scanned as a fallback for cache misses.
+    // Obsidian wiki embeds: ![[attachment]] or ![[attachment|size]].
+    // Metadata is used only to resolve an embed that actually exists in THIS
+    // note's current source, which avoids stale-cache counts after switching notes.
     const wiki = /!\[\[([^\]]+)\]\]/g;
+    let match;
     while ((match = wiki.exec(source))) {
       const target = String(match[1] || "").split("|", 1)[0].split("#", 1)[0].trim();
-      const resolved = file instanceof TFile ? this.app.metadataCache.getFirstLinkpathDest(target, file.path) : null;
-      const ext = resolved instanceof TFile
-        ? String(resolved.extension || "").toLowerCase()
-        : (target.includes(".") ? target.slice(target.lastIndexOf(".") + 1).toLowerCase() : "");
-      if (imageExtensions.has(ext)) addAt(match.index);
+      const resolved = target && file instanceof TFile
+        ? this.app.metadataCache.getFirstLinkpathDest(target, file.path)
+        : null;
+
+      let extension = "";
+      if (resolved instanceof TFile) {
+        extension = String(resolved.extension || "").toLowerCase();
+      } else {
+        const clean = target.split(/[?#]/, 1)[0];
+        if (clean.includes(".")) extension = clean.slice(clean.lastIndexOf(".") + 1).toLowerCase();
+      }
+
+      if (imageExtensions.has(extension)) count++;
       if (match.index === wiki.lastIndex) wiki.lastIndex++;
     }
 
-    // Raw HTML images are not guaranteed to appear in metadataCache.embeds.
-    const html = /<img\b[^>]*>/gi;
-    while ((match = html.exec(source))) {
-      addAt(match.index);
-      if (match.index === html.lastIndex) html.lastIndex++;
-    }
+    // Raw HTML image tags.
+    count += (source.match(/<img\b[^>]*>/gi) || []).length;
 
-    return positions.size;
+    return count;
   }
   renderNoteInfo(parent, file, text, counts) {
     const infoCard = parent.createDiv({ cls: "ct-note-info-card" });
