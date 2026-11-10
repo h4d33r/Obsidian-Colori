@@ -17,7 +17,6 @@ const CONNECTIONS_END = "<!-- colori-connections:end -->";
 const HEX_COLOR_RE = /^#[0-9a-fA-F]{6}$/;
 const MAX_ICON_CODE_POINTS = 12;
 const MAX_PATH_LENGTH = 4096;
-const IOC_LIMITS = new Set([10, 25, 50, 100, 250]);
 const DEFAULT_SETTINGS = Object.freeze({
   folderColor: "#f0a45d",
   folderSize: 14,
@@ -624,85 +623,6 @@ module.exports = class ColoriPlugin extends Plugin {
   }
 
 
-  getUrlHosts(text) {
-    const source = typeof text === "string" ? text : "";
-    const hosts = new Set();
-    const regex = /\b(?:https?|hxxps?):\/\/([^\s<>"'`\/?)#]+)/gi;
-    let match;
-    while ((match = regex.exec(source))) {
-      const host = match[1].replace(/:\d+$/, "").replace(/\[\.\]/g, ".").toLowerCase();
-      if (host) hosts.add(host);
-      if (match.index === regex.lastIndex) regex.lastIndex++;
-    }
-    return hosts;
-  }
-
-  scanIocs(text, type, limit) {
-    const source = typeof text === "string" ? text : "";
-    const safeLimit = limit === "all" ? Number.POSITIVE_INFINITY : (IOC_LIMITS.has(Number(limit)) ? Number(limit) : Number.POSITIVE_INFINITY);
-    const wanted = ["all", "url", "ip", "domain", "hash", "email"].includes(type) ? type : "all";
-    const results = [];
-    const seen = new Set();
-    const urlHosts = this.getUrlHosts(source);
-
-    const add = (kind, value) => {
-      const normalized = value.trim();
-      const key = `${kind}:${normalized.toLowerCase()}`;
-      if (!normalized || seen.has(key) || results.length >= safeLimit) return;
-      seen.add(key);
-      results.push({ type: kind, value: normalized });
-    };
-
-    const run = (kind, regex, validate) => {
-      regex.lastIndex = 0;
-      let match;
-      while (results.length < safeLimit && (match = regex.exec(source))) {
-        if (!validate || validate(match[0])) add(kind, match[0]);
-        if (match.index === regex.lastIndex) regex.lastIndex++;
-      }
-    };
-
-    if (wanted === "all" || wanted === "url") run("URL", /\b(?:https?|hxxps?):\/\/[^\s<>"'`\)]+/gi);
-    if (wanted === "all" || wanted === "ip") run("IP", /\b(?:\d{1,3}\.){3}\d{1,3}\b/g, (value) => value.split(".").every((part) => Number(part) <= 255));
-    if (wanted === "all" || wanted === "hash") run("Hash", /\b(?:[a-f0-9]{64}|[a-f0-9]{40}|[a-f0-9]{32})\b/gi);
-    if (wanted === "all" || wanted === "email") run("Email", /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi);
-    if (wanted === "all" || wanted === "domain") run("Domain", /\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.|\[\.\]))+[a-z]{2,63}\b/gi, (value) => {
-      const normalized = value.replace(/\[\.\]/g, ".").toLowerCase();
-      return !urlHosts.has(normalized);
-    });
-    return Number.isFinite(safeLimit) ? results.slice(0, safeLimit) : results;
-  }
-
-  countIocs(text) {
-    const source = typeof text === "string" ? text : "";
-    const counts = { URL: 0, IP: 0, Domain: 0, Hash: 0, Email: 0 };
-    const urlHosts = this.getUrlHosts(source);
-    const countMatches = (kind, regex, validate) => {
-      regex.lastIndex = 0;
-      let match;
-      const seen = new Set();
-      while ((match = regex.exec(source))) {
-        const value = match[0];
-        if ((!validate || validate(value)) && !seen.has(value.toLowerCase())) {
-          seen.add(value.toLowerCase());
-          counts[kind]++;
-        }
-        if (match.index === regex.lastIndex) regex.lastIndex++;
-      }
-    };
-    countMatches("URL", /\b(?:https?|hxxps?):\/\/[^\s<>"'`\)]+/gi);
-    countMatches("IP", /\b(?:\d{1,3}\.){3}\d{1,3}\b/g, (value) => value.split(".").every((part) => Number(part) <= 255));
-    countMatches("Hash", /\b(?:[a-f0-9]{64}|[a-f0-9]{40}|[a-f0-9]{32})\b/gi);
-    countMatches("Email", /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi);
-    countMatches("Domain", /\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.|\[\.\]))+[a-z]{2,63}\b/gi, (value) => {
-      const normalized = value.replace(/\[\.\]/g, ".").toLowerCase();
-      return !urlHosts.has(normalized);
-    });
-    counts.Total = counts.URL + counts.IP + counts.Domain + counts.Hash + counts.Email;
-    return counts;
-  }
-
-
   async openSidebar() {
     let leaf = this.app.workspace.getLeavesOfType(VIEW_TYPE)[0];
     if (!leaf) {
@@ -901,10 +821,6 @@ class NoteToolsView extends ItemView {
     super(leaf);
     this.plugin = plugin;
     this.openSections = new Set();
-    this.scanTypes = new Set(["url", "ip", "domain", "hash", "email"]);
-    this.scanLimit = "all";
-    this.scanResults = null;
-    this.scanPath = null;
     this.appearanceScope = "note";
   }
 
@@ -931,7 +847,7 @@ class NoteToolsView extends ItemView {
   }
 
 
-  renderNoteInfo(parent, file, text, counts) {
+  renderNoteInfo(parent, file, text) {
     const infoCard = parent.createDiv({ cls: "ct-note-info-card" });
     infoCard.createEl("div", { text: "Note Info", cls: "ct-note-info-title" });
     const infoGrid = infoCard.createDiv({ cls: "ct-note-info" });
@@ -939,12 +855,10 @@ class NoteToolsView extends ItemView {
     const lines = text ? text.split(/\r?\n/).length : 0;
     const size = file.stat.size < 1024 ? `${file.stat.size} B` : `${(file.stat.size / 1024).toFixed(1)} KB`;
 
-    const addInfoRow = (name, value, valueClass = "") => {
+    const addInfoRow = (name, value) => {
       infoGrid.createEl("span", { text: name, cls: "ct-note-info-label" });
-      infoGrid.createEl("span", { text: String(value), cls: `ct-note-info-value ${valueClass}`.trim() });
+      infoGrid.createEl("span", { text: String(value), cls: "ct-note-info-value" });
     };
-
-    addInfoRow("Total IOCs", counts.Total, "ct-note-info-ioc-total");
 
     addInfoRow("Words", words);
     addInfoRow("Lines", lines);
@@ -969,16 +883,11 @@ class NoteToolsView extends ItemView {
     }
 
     this.plugin.lastMarkdownPath = file.path;
-    if (this.scanPath && this.scanPath !== file.path) {
-      this.scanResults = null;
-      this.scanPath = null;
-    }
 
     container.createEl("div", { text: file.basename, cls: "ct-sidebar-note" });
     container.createEl("div", { text: file.path, cls: "ct-sidebar-path" });
 
     const text = await this.readTrackedText(file);
-    const counts = this.plugin.countIocs(text);
 
     const safeRow = container.createDiv({ cls: "ct-safe-links-row" });
     safeRow.createSpan({ text: "Safe Links" });
@@ -1003,89 +912,6 @@ class NoteToolsView extends ItemView {
     refang.addEventListener("mousedown", (event) => event.preventDefault());
     refang.addEventListener("click", async () => { const changed = await this.plugin.transformTrackedNote("refang"); if (changed) { this.openSections.add("defang"); await this.render(); } });
     defangBody.createEl("p", { text: "If text is selected in the note, only the selection is processed. Otherwise the whole note is processed.", cls: "ct-muted" });
-
-    const iocBody = this.makeDropdown(container, "ioc", "IOC Scanner");
-    const iocSummary = iocBody.createDiv({ cls: "ct-ioc-scanner-summary" });
-    iocSummary.createSpan({ text: `Total ${counts.Total}`, cls: "ct-ioc-scanner-total" });
-    const iocBreakdown = iocSummary.createDiv({ cls: "ct-ioc-breakdown" });
-    for (const [label, value] of [["URL", counts.URL], ["IP", counts.IP], ["Domain", counts.Domain], ["Hash", counts.Hash], ["Email", counts.Email]]) {
-      const pill = iocBreakdown.createSpan({ cls: "ct-ioc-pill" });
-      pill.createSpan({ text: label, cls: "ct-ioc-pill-label" });
-      pill.createSpan({ text: String(value), cls: "ct-ioc-pill-count" });
-    }
-    const typeBox = iocBody.createDiv({ cls: "ct-ioc-type-grid" });
-    const choices = [["url", "URLs"], ["ip", "IPs"], ["domain", "Domains"], ["hash", "Hashes"], ["email", "Emails"]];
-    for (const [value, label] of choices) {
-      const item = typeBox.createEl("label", { cls: "ct-ioc-check" });
-      const box = item.createEl("input", { type: "checkbox" });
-      box.checked = this.scanTypes.has(value);
-      box.addEventListener("change", () => {
-        if (box.checked) this.scanTypes.add(value); else this.scanTypes.delete(value);
-        this.scanResults = null;
-      });
-      item.createSpan({ text: label });
-    }
-
-    const limitRow = iocBody.createDiv({ cls: "ct-ioc-limit-row" });
-    limitRow.createSpan({ text: "Maximum results" });
-    const limitSelect = limitRow.createEl("select");
-    for (const [value, label] of [["all", "All"], ["10", "10"], ["25", "25"], ["50", "50"], ["100", "100"], ["250", "250"]]) {
-      const option = limitSelect.createEl("option", { value, text: label });
-      if (String(this.scanLimit) === value) option.selected = true;
-    }
-    limitSelect.addEventListener("change", () => {
-      this.scanLimit = limitSelect.value === "all" ? "all" : Number(limitSelect.value);
-      this.scanResults = null;
-    });
-
-    const scanButton = iocBody.createEl("button", { text: "Scan current note", cls: "ct-sidebar-wide-button" });
-    scanButton.addEventListener("click", async () => {
-      if (!this.scanTypes.size) { new Notice("Choose at least one IOC type."); return; }
-      const currentFile = this.plugin.getTrackedFile();
-      if (!(currentFile instanceof TFile)) return;
-      const currentText = await this.readTrackedText(currentFile);
-      const all = [];
-      const numericLimit = this.scanLimit === "all" ? Number.POSITIVE_INFINITY : Number(this.scanLimit);
-      for (const type of this.scanTypes) {
-        if (Number.isFinite(numericLimit) && all.length >= numericLimit) break;
-        const remaining = Number.isFinite(numericLimit) ? Math.max(0, numericLimit - all.length) : "all";
-        all.push(...this.plugin.scanIocs(currentText, type, remaining));
-      }
-      this.scanResults = Number.isFinite(numericLimit) ? all.slice(0, numericLimit) : all;
-      this.scanPath = currentFile.path;
-      this.openSections.add("ioc");
-      await this.render();
-    });
-
-    if (this.scanResults && this.scanPath === file.path) {
-      const grouped = new Map();
-      for (const item of this.scanResults) {
-        if (!grouped.has(item.type)) grouped.set(item.type, []);
-        grouped.get(item.type).push(item.value);
-      }
-      const labels = { URL: "URLs", IP: "IPs", Domain: "Domains", Hash: "Hashes", Email: "Emails" };
-      const resultBox = iocBody.createDiv({ cls: "ct-ioc-results" });
-      resultBox.createEl("div", { text: `${this.scanResults.length} found`, cls: "ct-ioc-result-count" });
-      for (const [type, values] of grouped.entries()) {
-        const group = resultBox.createEl("details", { cls: "ct-ioc-result-group" });
-        const summary = group.createEl("summary");
-        summary.createSpan({ text: `${labels[type] || type} (${values.length})`, cls: "ct-ioc-group-title" });
-        const body = group.createDiv({ cls: "ct-ioc-group-body" });
-        let rendered = false;
-        const renderValues = () => {
-          if (rendered) return;
-          rendered = true;
-          for (const value of values) {
-            const row = body.createDiv({ cls: "ct-ioc-row" });
-            row.createEl("code", { text: value, cls: "ct-ioc-code" });
-            const copy = row.createEl("button", { text: "Copy", cls: "ct-ioc-copy" });
-            copy.setAttribute("aria-label", `Copy ${type}`);
-            copy.addEventListener("click", () => navigator.clipboard.writeText(value));
-          }
-        };
-        group.addEventListener("toggle", () => { if (group.open) renderValues(); });
-      }
-    }
 
     const appearanceBody = this.makeDropdown(container, "appearance", "Appearance");
     appearanceBody.addClass("ct-appearance-body");
@@ -1216,7 +1042,7 @@ class NoteToolsView extends ItemView {
       }
     }
 
-    this.renderNoteInfo(container, file, text, counts);
+    this.renderNoteInfo(container, file, text);
 
   }
 }
@@ -1402,3 +1228,4 @@ class ColoriSettingTab extends PluginSettingTab {
     }));
   }
 }
+

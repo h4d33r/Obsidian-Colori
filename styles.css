@@ -121,19 +121,6 @@ body:not([style*='--ct-note-icon: ""']) .nav-file-title-content::before { margin
 .ct-sidebar-actions button,
 .ct-sidebar-wide-button { width: 100%; }
 .ct-sidebar-wide-button { margin-top: 8px; }
-.ct-ioc-results {
-  margin-top: 10px;
-  max-height: 360px;
-  overflow-y: auto;
-}
-.ct-ioc-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 7px;
-  align-items: center;
-  padding: 5px 0;
-}
-.ct-ioc-row button { padding: 2px 7px; font-size: var(--font-ui-smaller); }
 .ct-note-info {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
@@ -159,17 +146,6 @@ body:not([style*='--ct-note-icon: ""']) .nav-file-title-content::before { margin
 
 .ct-tools-dropdown-body { padding: 4px 12px 12px; }
 
-
-.ct-ioc-type-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 6px 10px;
-  margin: 6px 0 10px;
-}
-
-.ct-ioc-check { display: flex; align-items: center; gap: 6px; }
-.ct-ioc-limit-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 8px 0; }
-.ct-ioc-group-title { margin: 12px 0 5px; font-size: var(--font-ui-small); font-weight: 700; color: var(--text-muted); }
 
 /* Always-visible Note Info and Safe Links control */
 .ct-safe-links-row {
@@ -210,71 +186,6 @@ body:not([style*='--ct-note-icon: ""']) .nav-file-title-content::before { margin
 .suggestion-item.is-selected,
 .suggestion-item.is-selected * {
   color: var(--text-on-accent) !important;
-}
-
-
-/* Note Tools v6: grouped IOCs, related notes, aligned appearance */
-.ct-ioc-result-count {
-  margin: 4px 0 8px;
-  color: var(--text-muted);
-  font-size: var(--font-ui-small);
-}
-
-.ct-ioc-result-group {
-  margin: 7px 0;
-  border: 1px solid var(--background-modifier-border);
-  border-radius: 7px;
-  overflow: hidden;
-  background: var(--background-secondary);
-}
-
-.ct-ioc-result-group > summary {
-  cursor: pointer;
-  list-style: none;
-  padding: 8px 10px;
-  user-select: none;
-}
-
-.ct-ioc-result-group > summary::-webkit-details-marker { display: none; }
-.ct-ioc-result-group > summary::after {
-  content: "›";
-  float: right;
-  color: var(--text-muted);
-  transition: transform 120ms ease;
-}
-.ct-ioc-result-group[open] > summary::after { transform: rotate(90deg); }
-
-.ct-ioc-result-group .ct-ioc-group-title {
-  margin: 0;
-  color: var(--text-accent);
-  font-weight: 750;
-  font-size: var(--font-ui-small);
-}
-
-.ct-ioc-group-body {
-  padding: 4px 9px 8px;
-  border-top: 1px solid var(--background-modifier-border);
-  background: var(--background-primary);
-}
-
-.ct-ioc-row .ct-ioc-code {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.ct-ioc-row .ct-ioc-copy {
-  opacity: 0;
-  visibility: hidden;
-  pointer-events: none;
-  transition: opacity 100ms ease;
-}
-.ct-ioc-row:hover .ct-ioc-copy,
-.ct-ioc-row:focus-within .ct-ioc-copy {
-  opacity: 1;
-  visibility: visible;
-  pointer-events: auto;
 }
 
 
@@ -399,54 +310,6 @@ body:not([style*='--ct-note-icon: ""']) .nav-file-title-content::before { margin
   letter-spacing: 0.16em;
 }
 
-.ct-note-info-ioc-total {
-  color: var(--text-accent);
-  font-weight: 750;
-}
-
-.ct-ioc-breakdown {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 5px;
-  min-width: 0;
-}
-
-.ct-ioc-scanner-summary {
-  display: flex;
-  flex-direction: column;
-  gap: 7px;
-  margin: 2px 0 12px;
-  padding: 9px;
-  border-radius: 7px;
-  background: var(--background-secondary);
-}
-
-.ct-ioc-scanner-total {
-  color: var(--text-accent);
-  font-weight: 750;
-}
-
-.ct-ioc-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 2px 6px;
-  border: 1px solid var(--background-modifier-border);
-  border-radius: 999px;
-  background: var(--background-modifier-hover);
-  font-size: var(--font-ui-smaller);
-  white-space: nowrap;
-}
-
-.ct-ioc-pill-label {
-  color: var(--text-muted);
-}
-
-.ct-ioc-pill-count {
-  color: var(--text-normal);
-  font-weight: 750;
-  font-variant-numeric: tabular-nums;
-}
 
 /* Quick manual connections */
 .ct-connection-header {
@@ -481,3 +344,4 @@ body:not([style*='--ct-note-icon: ""']) .nav-file-title-content::before { margin
   width: 30px;
   padding: 4px 0;
 }
+
