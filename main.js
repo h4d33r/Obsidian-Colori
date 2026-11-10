@@ -5,6 +5,7 @@ const {
   ItemView,
   MarkdownView,
   FuzzySuggestModal,
+  Modal,
   Notice,
   TFile,
   TFolder,
@@ -338,6 +339,14 @@ module.exports = class ColoriPlugin extends Plugin {
     });
 
     this.registerEvent(this.app.workspace.on("file-menu", (menu, file) => {
+      if (file instanceof TFolder) {
+        menu.addItem((item) => item
+          .setTitle("Colori: Folder appearance…")
+          .setIcon("palette")
+          .onClick(() => new FolderAppearanceModal(this.app, this, file).open()));
+        return;
+      }
+
       if (!(file instanceof TFile) || file.extension !== "md") return;
       menu.addItem((item) => item
         .setTitle("Colori: Connect note…")
@@ -1209,6 +1218,91 @@ class NoteToolsView extends ItemView {
 
     this.renderNoteInfo(container, file, text, counts);
 
+  }
+}
+
+class FolderAppearanceModal extends Modal {
+  constructor(app, plugin, folder) {
+    super(app);
+    this.plugin = plugin;
+    this.folder = folder;
+  }
+
+  onOpen() {
+    const path = sanitizePath(this.folder?.path);
+    if (!path) {
+      new Notice("Unable to style this folder.");
+      this.close();
+      return;
+    }
+
+    const exact = this.plugin.getOverride("folder", path);
+    const appearance = exact
+      ? { color: exact.color, size: exact.size, icon: exact.icon || "" }
+      : {
+          color: this.plugin.settings.folderColor,
+          size: this.plugin.settings.folderSize,
+          icon: this.plugin.settings.folderIcon || ""
+        };
+
+    this.titleEl.setText(`Colori: ${this.folder.name || path}`);
+    this.contentEl.empty();
+    this.contentEl.createEl("p", { text: `Folder: ${path}`, cls: "ct-muted" });
+
+    new Setting(this.contentEl)
+      .setName("Title color")
+      .setDesc("Applies only to this folder.")
+      .addColorPicker((picker) => picker
+        .setValue(sanitizeColor(appearance.color, this.plugin.settings.folderColor))
+        .onChange((value) => {
+          appearance.color = sanitizeColor(value, this.plugin.settings.folderColor);
+        }));
+
+    new Setting(this.contentEl)
+      .setName("Title size")
+      .setDesc("Applies only to this folder.")
+      .addSlider((slider) => slider
+        .setLimits(10, 30, 1)
+        .setValue(sanitizeSize(appearance.size, 10, 30, this.plugin.settings.folderSize))
+        .setDynamicTooltip()
+        .onChange((value) => {
+          appearance.size = sanitizeSize(value, 10, 30, this.plugin.settings.folderSize);
+        }));
+
+    new Setting(this.contentEl)
+      .setName("Icon")
+      .setDesc("Optional text or emoji shown before this folder name.")
+      .addText((text) => text
+        .setPlaceholder("Optional")
+        .setValue(appearance.icon || "")
+        .onChange((value) => {
+          appearance.icon = sanitizeIcon(value);
+        }));
+
+    const actions = new Setting(this.contentEl);
+    actions.addButton((button) => button
+      .setButtonText("Apply")
+      .setCta()
+      .onClick(async () => {
+        await this.plugin.upsertOverride("folder", path, appearance);
+        new Notice(`Updated folder appearance: ${this.folder.name || path}`);
+        this.close();
+      }));
+
+    if (exact) {
+      actions.addButton((button) => button
+        .setButtonText("Reset")
+        .setWarning()
+        .onClick(async () => {
+          await this.plugin.removeOverride("folder", path);
+          new Notice(`Reset folder appearance: ${this.folder.name || path}`);
+          this.close();
+        }));
+    }
+  }
+
+  onClose() {
+    this.contentEl.empty();
   }
 }
 
